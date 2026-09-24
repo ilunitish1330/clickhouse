@@ -1,3 +1,84 @@
+# Dynamics AX 2012 → ClickHouse → Power BI
+
+`ax_load.py` copies 17 AX tables from SQL Server into a star schema in the ClickHouse
+database `ax`, then builds monthly aggregate tables for Power BI. Each run fully reloads
+every table into a staging copy and swaps it in atomically (`EXCHANGE TABLES`). Power BI
+never sees a half-loaded or duplicated table, and rows deleted in AX disappear. The biggest
+source (INVENTTRANS) has ~340k rows, so a full run takes a few minutes.
+
+### Run it
+
+Run this on a machine that can reach both SQL Server (port 1433) and ClickHouse (HTTP, port 8123).
+The SQL Server box itself works.
+
+```bash
+pip install pymssql httpx
+cp .env.example .env          # fill in MSSQL_PASS and the ClickHouse URL/password
+python3 ax_load.py --check    # connects, prints the row count of every source table
+python3 ax_load.py --init     # creates database ax and all tables (safe to re-run)
+python3 ax_load.py            # loads everything, then rebuilds the aggregates
+python3 ax_load.py fact_sales dim_item   # reload only some tables (+ aggregates)
+python3 ax_load.py --aggregates          # rebuild aggregates only
+python3 test_ax_load.py       # end-to-end self-test, SQL Server faked. DROPS database ax
+```
+
+Schedule the plain `python3 ax_load.py` with cron or Windows Task Scheduler (e.g. nightly).
+
+### What lands in ClickHouse
+
+| ClickHouse table | AX source | Grain |
+|---|---|---|
+| `dim_customer` | CUSTTABLE + DIRPARTYTABLE (name) | customer |
+| `dim_vendor` | VENDTABLE + DIRPARTYTABLE (name) | vendor |
+| `dim_item` | INVENTTABLE + ECORESPRODUCT/TRANSLATION (name) | item |
+| `dim_project` | PROJTABLE | project |
+| `dim_purch_order` | PURCHTABLE (incl. PURCHNAME) | purchase order |
+| `fact_sales` | SALESLINE + SALESTABLE | sales order line |
+| `fact_cust_invoice` | CUSTINVOICEJOUR | customer invoice |
+| `fact_cust_trans` | CUSTTRANS | AR transaction |
+| `fact_vend_invoice` | VENDINVOICEJOUR | vendor invoice |
+| `fact_vend_invoice_line` | VENDINVOICETRANS (+ vendor from the journal) | vendor invoice line |
+| `fact_vend_trans` | VENDTRANS | AP transaction |
+| `fact_invent_trans` | INVENTTRANS + INVENTTRANSORIGIN + INVENTDIM | inventory transaction |
+| `fact_proj_posting` | PROJTRANSPOSTING | project posting |
+| `fact_proj_item_trans` | PROJITEMTRANS | project item transaction |
+| `dim_date`, `dim_status`, `dim_currency` | generated | |
+
+Aggregates (rebuilt every run, from `aggregates.sql`): `agg_sales_monthly`,
+`agg_cust_invoice_monthly`, `agg_ar_monthly`, `agg_purchases_monthly`, `agg_ap_monthly`,
+`agg_purch_orders_monthly`, `agg_inventory_monthly`, `agg_inventory_onhand`,
+`agg_project_monthly`, `agg_proj_items_monthly`. `SELECT * FROM ax.v_aggregate` lists each
+one with its grain and size. `SELECT * FROM ax.v_last_load` shows when each table was last loaded.
+
+Things to know when building reports:
+- `data_area` is the AX company. Account and item ids are only unique within it.
+- `*_mst` amounts are in the company's own currency. Other amounts are in the document currency.
+- AX's empty date (1900-01-01) is stored as `1970-01-01`.
+- Distinct counts in the aggregates (`orders`, `invoices`) are per aggregate row. Don't sum
+  them across rows. Count distinct on the fact table instead.
+- Customer-side status codes are verified against this AX instance. The purchase and inventory
+  status names are the standard AX 2012 enum values, so check a few before relying on them.
+  Unknown codes show up as `code_N`.
+
+### Power BI
+
+1. Install the [ClickHouse ODBC driver](https://github.com/ClickHouse/clickhouse-odbc/releases)
+   on the PC running Power BI Desktop (and on the on-premises data gateway for scheduled refresh).
+2. Power BI Desktop → Get Data → **ClickHouse** → server = ClickHouse host, port 8123,
+   database `ax`. Use **Import** mode.
+3. Load the `dim_*` tables plus the `agg_*` tables you need (or `fact_*` for line-level detail).
+4. Relationships: every table carries single-column keys (`customer_key`, `vendor_key`,
+   `item_key`, `project_key`, `purch_key`, each `data_area|id`), because Power BI can't relate
+   on two columns. Relate `agg_*.month` or any fact date to `dim_date.date_key`.
+
+### Adding a table
+
+Add a `CREATE TABLE` to `ch_schema.sql` and a `TABLES["name"] = ("AXTABLE", "SELECT ... AS col")`
+entry to `ax_load.py`. The SELECT's column aliases must match the ClickHouse columns, and
+`test_ax_load.py` checks that. Then run `--init` and `python3 ax_load.py name`.
+
+---
+
 # ClickHouse, learned by running it
 
 20M rows of fake analytics events, then 8 lessons that each show one thing ClickHouse
