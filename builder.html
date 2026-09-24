@@ -1,0 +1,342 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Table builder — ax</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --accent: #4c8dff; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 900px; padding: 1.5rem; }
+  h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+  h2 { font-size: 1rem; margin: 0 0 .6rem; }
+  input, select, button { font: inherit; padding: .3rem .4rem; }
+  label { font-size: 12px; opacity: .75; }
+  .row { display: flex; gap: .5rem; margin-bottom: .4rem; align-items: center; }
+  .row select { flex: 1; min-width: 0; }
+  .row button { opacity: .6; }
+  pre { overflow-x: auto; background: #8881; padding: .6rem; border-radius: 4px; }
+  .err { color: #c33; white-space: pre-wrap; }
+  .ok { color: #2a7; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 1rem 0; }
+
+  /* Connection panels */
+  .connect-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1rem; }
+  @media (max-width: 640px) { .connect-panels { grid-template-columns: 1fr; } }
+  .panel { border: 1px solid var(--line); border-radius: 6px; padding: 1rem; }
+  .panel.done { border-color: #2a7; }
+  .panel h2 { display: flex; align-items: center; gap: .4rem; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem .6rem; }
+  .form-grid label { display: flex; flex-direction: column; gap: .1rem; }
+  .form-grid input { width: 100%; box-sizing: border-box; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .connect-btn { margin-top: .5rem; padding: .35rem 1rem; }
+  .connect-msg { font-size: 13px; margin-top: .3rem; min-height: 1.2em; }
+  .badge { display: inline-block; background: #2a73; border: 1px solid #2a7; color: #2a7;
+    border-radius: 4px; padding: .05rem .4rem; font-size: 11px; }
+  .badge-blue { background: #4c8dff22; border-color: var(--accent); color: var(--accent); }
+
+  .step { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; opacity: .55;
+    margin: 0 0 .5rem; }
+  .warn { border-left: 3px solid #d90; background: #d9900012; padding: .5rem .7rem;
+    border-radius: 0 4px 4px 0; margin: .5rem 0; font-size: 13px; }
+  .row input.col { flex: 1; min-width: 0; }
+  .row .agg[disabled] { opacity: .3; }
+  .hint { font-size: 12px; opacity: .6; }
+  details.flow { font-size: 13px; margin-bottom: 1rem; }
+  details.flow summary { cursor: pointer; opacity: .7; }
+  details.flow ol { margin: .5rem 0; padding-left: 1.2rem; }
+</style>
+
+<h1>AX → ClickHouse table builder</h1>
+<p style="font-size:13px;opacity:.65;margin-top:-.5rem;margin-bottom:1rem">
+  Connect to MSSQL to read the source schema, and to ClickHouse to create tables.
+</p>
+
+<div class="connect-panels">
+
+  <!-- MSSQL -->
+  <div class="panel" id="mssql-panel">
+    <h2>MSSQL <small style="opacity:.5">(source schema)</small></h2>
+    <div class="form-grid">
+      <label>Host <input id="mssql-host" placeholder="192.168.1.100"></label>
+      <label>Port <input id="mssql-port" value="1433"></label>
+      <label>Username <input id="mssql-user" placeholder="sa"></label>
+      <label>Password <input id="mssql-pass" type="password"></label>
+      <label class="full">Database <input id="mssql-db" placeholder="MicrosoftDynamicsAX"></label>
+    </div>
+    <button class="connect-btn" id="mssql-btn">Connect</button>
+    <div class="connect-msg" id="mssql-msg"></div>
+  </div>
+
+  <!-- ClickHouse -->
+  <div class="panel" id="ch-panel">
+    <h2>ClickHouse <small style="opacity:.5">(target)</small></h2>
+    <div class="form-grid">
+      <label>Host <input id="ch-host" value="localhost"></label>
+      <label>HTTP Port <input id="ch-port" value="8123"></label>
+      <label>User <input id="ch-user" placeholder="default"></label>
+      <label>Password <input id="ch-pass" type="password" placeholder="(none)"></label>
+    </div>
+    <button class="connect-btn" id="ch-btn">Connect</button>
+    <div class="connect-msg" id="ch-msg"></div>
+  </div>
+
+</div>
+
+<hr>
+
+<!-- Table builder (hidden until both connections are ready) -->
+<div id="builder-section" hidden>
+  <h1>Build a table in ax
+    <span class="badge" id="mssql-badge"></span>
+    <span class="badge badge-blue" id="ch-badge"></span>
+  </h1>
+
+  <details class="flow">
+    <summary>How this works</summary>
+    <ol>
+      <li>Columns are read from MSSQL <code>INFORMATION_SCHEMA</code> — the AX source, not ClickHouse.</li>
+      <li><b>dimension</b> = the grain. Dimensions become the <code>ORDER BY</code> key.</li>
+      <li><b>measure / fact</b> = the raw value, carried across unchanged.</li>
+      <li><b>aggregate</b> = a rolled-up column <code>COLUMN_agg</code>. Add the same column
+          again for a second aggregation. Any aggregate makes it an <code>AggregatingMergeTree</code>.</li>
+      <li>The DDL below is built on the server from the column types — the page never sends SQL.</li>
+      <li>Create runs it. The table is <b>empty</b> until you press Load.</li>
+      <li>Load pulls raw rows from MSSQL and lets ClickHouse aggregate them. It truncates
+          first, so running it twice does not double your numbers.</li>
+      <li>Read an aggregate table with <code>GROUP BY</code> on the key and the
+          <code>*Merge()</code> functions — parts merge in the background, so raw
+          <code>SELECT *</code> can show several rows per key.</li>
+    </ol>
+  </details>
+
+  <p class="step">1 — name it and pick a source table</p>
+  <div class="row">
+    <label>New table <input id="name" placeholder="agg_sales_monthly"></label>
+    <label>From <select id="source"></select></label>
+    <span class="hint" id="colcount"></span>
+  </div>
+
+  <p class="step">2 — give each column a role</p>
+  <div id="rows"></div>
+  <button id="add">+ column</button>
+  <span class="hint">type to search — AX tables are wide</span>
+
+  <p class="step">3 — create it, then fill it</p>
+  <button id="create">Create table</button>
+  <label class="hint"><input type="checkbox" id="replace"> drop first if it exists</label>
+  <button id="load">Load data</button>
+  <span class="hint">truncates and reloads from MSSQL — safe to re-run</span>
+  <span id="msg"></span>
+  <div id="warnings"></div>
+  <pre id="ddl"></pre>
+  <datalist id="collist"></datalist>
+</div>
+
+<script>
+const ROLES = ['dimension', 'measure', 'fact', 'aggregate'];
+const AGGS  = ['sum', 'avg', 'min', 'max', 'count', 'uniq', 'uniqExact', 'any'];
+let schema = {};
+
+// Look elements up by id explicitly. The bare-id globals a browser hands out lose to
+// anything already on window — `name` is window.name, a string, so `name.value` is
+// undefined and every click died on the .trim() before it reached fetch().
+const $ = id => document.getElementById(id);
+
+const opts = (a, sel) => a.map(v => `<option${v === sel ? ' selected' : ''}>${v}</option>`).join('');
+
+function addRow() {
+  const div = document.createElement('div');
+  div.className = 'row';
+  // ponytail: <datalist> is the native type-to-filter combobox — no autocomplete library
+  // for a list that is already in memory.
+  div.innerHTML = `<input class="col" list="collist" placeholder="column">
+    <select class="role">${opts(ROLES)}</select>
+    <select class="agg" disabled>${opts(AGGS)}</select>
+    <button class="del">×</button>`;
+  div.querySelector('.col').value = cols()[0] ? cols()[0].name : '';
+  // the aggregation dropdown only means anything for the aggregate role
+  div.querySelector('.role').onchange = e =>
+    div.querySelector('.agg').disabled = e.target.value !== 'aggregate';
+  div.querySelector('.del').onclick = () => { div.remove(); preview(); };
+  $('rows').append(div);
+}
+
+const cols = () => schema[$('source').value] || [];
+
+function spec(create) {
+  return {
+    name: $('name').value.trim(), source: $('source').value, create,
+    cols: [...$('rows').children].map(d => ({
+      col:  d.querySelector('.col').value,
+      role: d.querySelector('.role').value,
+      agg:  d.querySelector('.agg').disabled ? '' : d.querySelector('.agg').value,
+    })),
+    replace: $('replace').checked,
+  };
+}
+
+async function send(create) {
+  const msg = $('msg'), ddl = $('ddl'), warn = $('warnings');
+  msg.textContent = ''; msg.className = ''; warn.innerHTML = '';
+  const s = spec(create);
+  // A half-filled form is the normal state while editing, so the live preview just
+  // goes quiet rather than shouting. Only a real click gets told off.
+  if (!s.name || !s.cols.length || s.cols.some(c => !c.col)) {
+    ddl.textContent = '';
+    if (create) { msg.className = 'err'; msg.textContent = 'name the table and fill every column row'; }
+    return;
+  }
+  if (create) msg.textContent = 'creating…';
+  try {
+    const r = await fetch('/api/build', {method: 'POST',
+      headers: {'content-type': 'application/json'}, body: JSON.stringify(s)});
+    const j = await r.json();
+    if (!r.ok) { ddl.textContent = ''; msg.className = 'err'; msg.textContent = j.detail; return; }
+    ddl.textContent = j.ddl;
+    warn.innerHTML = (j.warnings || []).map(w => `<div class="warn">${w}</div>`).join('');
+    msg.className = j.created ? 'ok' : '';
+    msg.textContent = j.created ? `ax.${s.name} created — empty, no data loaded yet ✓` : '';
+  } catch (e) {
+    msg.className = 'err'; msg.textContent = 'request failed: ' + e.message;
+  }
+}
+
+// The DDL redraws as you edit — the preview button was one click of ceremony.
+let t; const preview = () => { clearTimeout(t); t = setTimeout(() => send(false), 200); };
+
+$('load').onclick = async () => {
+  const msg = $('msg'), s = spec(false);
+  msg.className = ''; msg.textContent = 'loading from MSSQL… (this can take a while)';
+  try {
+    const r = await fetch('/api/load', {method: 'POST',
+      headers: {'content-type': 'application/json'}, body: JSON.stringify(s)});
+    const j = await r.json();
+    if (!r.ok) { msg.className = 'err'; msg.textContent = j.detail; return; }
+    msg.className = 'ok';
+    msg.textContent = `${j.rows.toLocaleString()} source rows loaded into ax.${s.name} ✓`;
+  } catch (e) { msg.className = 'err'; msg.textContent = 'load failed: ' + e.message; }
+};
+
+$('add').onclick = () => { addRow(); preview(); };
+$('create').onclick = () => send(true);
+$('rows').addEventListener('input', preview);
+$('name').addEventListener('input', preview);
+$('source').onchange = () => { $('rows').innerHTML = ''; addRow(); showCols(); preview(); };
+
+function showCols() {
+  const c = cols();
+  $('colcount').textContent = `${c.length} columns`;
+  $('collist').innerHTML = c.map(x =>
+    `<option value="${x.name}">${x.mssql_type} → ${x.type}</option>`).join('');
+}
+
+// --- connection state ---
+let mssqlOk = false, chOk = false;
+
+function checkReady() {
+  if (mssqlOk && chOk) {
+    document.getElementById('builder-section').hidden = false;
+  }
+}
+
+// Restore saved settings from localStorage
+const savedMssql = JSON.parse(localStorage.getItem('mssql_creds') || '{}');
+if (savedMssql.host) document.getElementById('mssql-host').value = savedMssql.host;
+if (savedMssql.port) document.getElementById('mssql-port').value = savedMssql.port;
+if (savedMssql.user) document.getElementById('mssql-user').value = savedMssql.user;
+if (savedMssql.database) document.getElementById('mssql-db').value = savedMssql.database;
+
+const savedCh = JSON.parse(localStorage.getItem('ch_creds') || '{}');
+if (savedCh.host) document.getElementById('ch-host').value = savedCh.host;
+if (savedCh.port) document.getElementById('ch-port').value = savedCh.port;
+if (savedCh.user) document.getElementById('ch-user').value = savedCh.user;
+
+// --- MSSQL connect ---
+document.getElementById('mssql-btn').onclick = async () => {
+  const el = document.getElementById('mssql-msg');
+  el.textContent = 'connecting…'; el.className = 'connect-msg';
+  const creds = {
+    host:     document.getElementById('mssql-host').value.trim(),
+    user:     document.getElementById('mssql-user').value.trim(),
+    password: document.getElementById('mssql-pass').value,
+    database: document.getElementById('mssql-db').value.trim(),
+    port:     document.getElementById('mssql-port').value.trim() || '1433',
+  };
+  if (!creds.host || !creds.user || !creds.database) {
+    el.className = 'connect-msg err'; el.textContent = 'host, user, and database are required'; return;
+  }
+  try {
+    const r = await fetch('/api/connect', {method: 'POST',
+      headers: {'content-type': 'application/json'}, body: JSON.stringify(creds)});
+    const j = await r.json();
+    if (!r.ok) { el.className = 'connect-msg err'; el.textContent = j.detail; return; }
+    el.className = 'connect-msg ok'; el.textContent = 'connected ✓';
+    document.getElementById('mssql-panel').classList.add('done');
+    localStorage.setItem('mssql_creds', JSON.stringify({
+      host: creds.host, port: creds.port, user: creds.user, database: creds.database,
+    }));
+    mssqlOk = true;
+    document.getElementById('mssql-badge').textContent = '✓ ' + creds.host;
+    await loadSchema();
+    checkReady();
+  } catch (e) { el.className = 'connect-msg err'; el.textContent = e.message; }
+};
+
+// --- ClickHouse connect ---
+document.getElementById('ch-btn').onclick = async () => {
+  const el = document.getElementById('ch-msg');
+  el.textContent = 'connecting…'; el.className = 'connect-msg';
+  const creds = {
+    host:     document.getElementById('ch-host').value.trim() || 'localhost',
+    port:     document.getElementById('ch-port').value.trim() || '8123',
+    user:     document.getElementById('ch-user').value.trim(),
+    password: document.getElementById('ch-pass').value,
+  };
+  try {
+    const r = await fetch('/api/connect_ch', {method: 'POST',
+      headers: {'content-type': 'application/json'}, body: JSON.stringify(creds)});
+    const j = await r.json();
+    if (!r.ok) { el.className = 'connect-msg err'; el.textContent = j.detail; return; }
+    el.className = 'connect-msg ok'; el.textContent = 'connected ✓';
+    document.getElementById('ch-panel').classList.add('done');
+    localStorage.setItem('ch_creds', JSON.stringify({
+      host: creds.host, port: creds.port, user: creds.user,
+    }));
+    chOk = true;
+    document.getElementById('ch-badge').textContent = '✓ ' + creds.host + ':' + creds.port;
+    checkReady();
+  } catch (e) { el.className = 'connect-msg err'; el.textContent = e.message; }
+};
+
+async function loadSchema() {
+  const r = await fetch('/api/source');
+  const j = await r.json();
+  if (!r.ok) {
+    const el = document.getElementById('mssql-msg');
+    el.className = 'connect-msg err'; el.textContent = j.detail; return;
+  }
+  schema = j;
+  $('source').innerHTML = Object.keys(schema).map(t => `<option>${t}</option>`).join('');
+  $('rows').innerHTML = '';
+  showCols();
+  addRow();
+}
+
+// On load, check if either connection is already available (env vars / defaults)
+fetch('/api/connected').then(r => r.json()).then(j => {
+  if (j.mssql) {
+    mssqlOk = true;
+    document.getElementById('mssql-msg').className = 'connect-msg ok';
+    document.getElementById('mssql-msg').textContent = 'connected via env vars ✓';
+    document.getElementById('mssql-panel').classList.add('done');
+    document.getElementById('mssql-badge').textContent = '✓ env';
+    loadSchema().then(checkReady);
+  }
+  if (j.clickhouse) {
+    chOk = true;
+    document.getElementById('ch-msg').className = 'connect-msg ok';
+    document.getElementById('ch-msg').textContent = 'default (localhost:8123) ✓';
+    document.getElementById('ch-panel').classList.add('done');
+    document.getElementById('ch-badge').textContent = '✓ localhost:8123';
+    checkReady();
+  }
+});
+</script>

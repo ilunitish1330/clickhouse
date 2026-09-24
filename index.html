@@ -1,0 +1,163 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ClickHouse demo — learn.events</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 1000px; padding: 1.5rem; }
+  h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+  form { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin-bottom: 1.5rem; }
+  label { display: flex; flex-direction: column; font-size: 12px; opacity: .75; gap: .2rem; }
+  input, select, button { font: inherit; padding: .3rem .4rem; }
+  section { border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-bottom: 1rem; }
+  h2 { font-size: .95rem; margin: 0 0 .8rem; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
+  .tile b { display: block; font-size: 1.6rem; font-weight: 600; }
+  .tile span { font-size: 12px; opacity: .7; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid var(--line); }
+  td:not(:first-child), th:not(:first-child) { text-align: right; }
+  details { margin-top: .8rem; font-size: 12px; }
+  summary { cursor: pointer; opacity: .7; }
+  pre { overflow-x: auto; background: #8881; padding: .6rem; border-radius: 4px; }
+  svg { width: 100%; height: 220px; }
+  .legend { font-size: 12px; display: flex; gap: 1rem; }
+  .err { color: #c33; white-space: pre-wrap; }
+  .tabs { display: flex; gap: .4rem; margin-bottom: .8rem; }
+  .tabs button[aria-pressed=true] { font-weight: 600; outline: 2px solid #4c8dff; }
+</style>
+
+<h1>learn.events — 20M rows, and what each panel cost to read</h1>
+
+<form id="f">
+  <label>From <input type="datetime-local" name="frm" value="2024-01-01T00:00" step="1"></label>
+  <label>To <input type="datetime-local" name="to" value="2024-01-08T00:00" step="1"></label>
+  <label>Country <select name="country"><option value="">all</option></select></label>
+  <label>Device <select name="device"><option value="">all</option></select></label>
+  <label>Bucket <select name="bucket">
+    <option value="600">10 min</option>
+    <option value="3600" selected>1 hour</option>
+    <option value="86400">1 day</option>
+  </select></label>
+  <button>Run</button>
+</form>
+
+<section><h2>Summary</h2><div class="tiles" id="tiles"></div><div id="s-summary"></div></section>
+<section><h2>Events by device</h2><div id="chart"></div><div id="s-timeseries"></div></section>
+<section>
+  <h2>Breakdown by dimension</h2>
+  <div class="tabs" id="tabs"></div>
+  <div id="breakdown"></div><div id="s-breakdown"></div>
+</section>
+<section>
+  <h2>The dimensions themselves</h2>
+  <div id="dims"></div><div id="s-dimensions"></div>
+</section>
+
+<script>
+const $ = s => document.querySelector(s);
+const COLORS = ['#4c8dff', '#f5a623', '#3ec98a'];
+const fmt = n => Number(n).toLocaleString();
+
+// Every panel renders its own cost line: the SQL, rows scanned, bytes, elapsed.
+// That number is the lesson — same panel, different filter, wildly different read_rows.
+function stats(el, s) {
+  el.innerHTML = `<details><summary>${fmt(s.read_rows)} rows read ·
+    ${(s.read_bytes / 1e6).toFixed(1)} MB · ${s.elapsed_ms} ms</summary><pre></pre></details>`;
+  el.querySelector('pre').textContent = s.sql;
+}
+
+async function get(path, params) {
+  const r = await fetch(path + '?' + new URLSearchParams(params));
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+// ponytail: hand-rolled SVG line chart, ~20 lines, no chart library.
+function chart(el, rows, series) {
+  if (!rows.length) return el.textContent = 'no rows in range';
+  const W = 1000, H = 220, P = 30;
+  const max = Math.max(1, ...rows.flatMap(r => series.map(k => +r[k])));
+  const x = i => P + i * (W - 2 * P) / Math.max(1, rows.length - 1);
+  const y = v => H - P - v * (H - 2 * P) / max;
+  const paths = series.map((k, si) =>
+    `<path fill="none" stroke="${COLORS[si]}" stroke-width="1.5" d="M` +
+    rows.map((r, i) => `${x(i).toFixed(1)} ${y(+r[k]).toFixed(1)}`).join('L') + '"/>');
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${H - P}" stroke="var(--line)"/>
+      ${paths.join('')}
+      <text x="${P}" y="${P - 8}" font-size="11" fill="currentColor">peak ${fmt(max)}</text>
+    </svg>
+    <div class="legend">${series.map((k, i) =>
+      `<span style="color:${COLORS[i]}">■ ${k}</span>`).join('')}
+      <span style="opacity:.6">${rows[0].t} → ${rows.at(-1).t}</span></div>`;
+}
+
+function table(el, rows) {
+  if (!rows.length) return el.textContent = 'no rows in range';
+  const cols = Object.keys(rows[0]);
+  el.innerHTML = '<table><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>' +
+    rows.map(r => '<tr>' + cols.map(c =>
+      `<td>${typeof r[c] === 'number' ? fmt(r[c]) : r[c]}</td>`).join('') + '</tr>').join('') +
+    '</table>';
+}
+
+const DIMS = ['country', 'device', 'url'];
+let dim = 'country';
+
+$('#tabs').innerHTML = DIMS.map(d =>
+  `<button type="button" data-dim="${d}" aria-pressed="${d === dim}">${d}</button>`).join('');
+$('#tabs').onclick = e => {
+  if (!e.target.dataset.dim) return;
+  dim = e.target.dataset.dim;
+  for (const b of $('#tabs').children) b.ariaPressed = b.dataset.dim === dim;
+  load();
+};
+
+async function load(e) {
+  e?.preventDefault();
+  const q = Object.fromEntries(new FormData($('#f')));
+  // datetime-local gives 2024-01-01T00:00 (seconds only once you type them);
+  // ClickHouse DateTime wants a space and all three components.
+  const dt = s => s.replace('T', ' ') + (s.length === 16 ? ':00' : '');
+  q.frm = dt(q.frm); q.to = dt(q.to);
+  const common = { frm: q.frm, to: q.to, country: q.country, device: q.device };
+  try {
+    const [sum, ts, top] = await Promise.all([
+      get('/api/summary', common),
+      get('/api/timeseries', { ...common, bucket: q.bucket }),
+      get('/api/breakdown', { ...common, dim }),
+    ]);
+    const d = sum.data;
+    $('#tiles').innerHTML = [
+      ['events', fmt(d.events)], ['unique users (uniq)', fmt(d.users)],
+      ['revenue', '$' + fmt(Math.round(d.revenue))],
+      ['p95 duration', Math.round(d.p95_ms) + ' ms'],
+    ].map(([k, v]) => `<div class="tile"><b>${v}</b><span>${k}</span></div>`).join('');
+    stats($('#s-summary'), sum.stats);
+    chart($('#chart'), ts.data, ['mobile', 'desktop', 'tablet']);
+    stats($('#s-timeseries'), ts.stats);
+    table($('#breakdown'), top.data);
+    stats($('#s-breakdown'), top.stats);
+  } catch (err) {
+    $('#tiles').innerHTML = `<div class="err">${err.message}</div>`;
+  }
+}
+
+// Column shapes don't depend on the filters, so this loads once.
+get('/api/dimensions', {}).then(({ data, stats: s }) => {
+  table($('#dims'), data.map(c => ({
+    column: c.name, type: c.type, distinct: c.distinct,
+    'MB on disk': +(c.compressed / 1e6).toFixed(1),
+    'compression': c.ratio + 'x',
+  })));
+  stats($('#s-dimensions'), s);
+});
+
+$('#f').onsubmit = load;
+// Fill both filter dropdowns from the table's own distinct values.
+for (const d of ['country', 'device'])
+  get('/api/values', { dim: d }).then(vs => $(`[name=${d}]`).insertAdjacentHTML(
+    'beforeend', vs.map(v => `<option>${v}</option>`).join('')));
+load();
+</script>
