@@ -1,0 +1,96 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p06_customers_v10",
+  "position": {
+    "x": 857.3333333333334,
+    "y": 188.0,
+    "z": 10000,
+    "width": 410.6666666666667,
+    "height": 254.0,
+    "tabOrder": 10000
+  },
+  "visual": {
+    "visualType": "clusteredColumnChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "CustomerPeriod"
+                    }
+                  },
+                  "Property": "bill_band"
+                }
+              },
+              "queryRef": "CustomerPeriod.bill_band",
+              "nativeQueryRef": "bill_band"
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "CustomerPeriod"
+                    }
+                  },
+                  "Property": "Customers in Band"
+                }
+              },
+              "queryRef": "CustomerPeriod.Customers in Band",
+              "nativeQueryRef": "Customers in Band"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "CustomerPeriod"
+                  }
+                },
+                "Property": "bill_band"
+              }
+            },
+            "direction": "Ascending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    },
+    "drillFilterOtherVisuals": true,
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Customers by bill size'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

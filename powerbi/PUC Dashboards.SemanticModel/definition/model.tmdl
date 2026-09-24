@@ -1,0 +1,21 @@
+model Model
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	sourceQueryCulture: en-US
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+annotation PBI_QueryOrder = ["ClickHouseUrl", "ClickHouseUser", "ClickHousePassword", "Billing", "Period", "Utility", "Region", "Tariff", "ChargeType", "CustomerPeriod", "ConnectionPeriod"]
+
+annotation __PBI_TimeIntelligenceEnabled = 0
+
+ref table Billing
+ref table Period
+ref table Utility
+ref table Region
+ref table Tariff
+ref table ChargeType
+ref table CustomerPeriod
+ref table ConnectionPeriod
+

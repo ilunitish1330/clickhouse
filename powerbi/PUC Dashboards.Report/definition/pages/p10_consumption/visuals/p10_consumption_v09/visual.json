@@ -1,0 +1,130 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p10_consumption_v09",
+  "position": {
+    "x": 12.0,
+    "y": 454.0,
+    "z": 9000,
+    "width": 1256.0,
+    "height": 254.0,
+    "tabOrder": 9000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Region"
+                    }
+                  },
+                  "Property": "region_name"
+                }
+              },
+              "queryRef": "Region.region_name",
+              "nativeQueryRef": "region_name"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Connections Billed"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Connections Billed",
+              "nativeQueryRef": "Connections Billed"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Average Use per Connection"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Average Use per Connection",
+              "nativeQueryRef": "Average Use per Connection"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Zero-consumption Connections"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Zero-consumption Connections",
+              "nativeQueryRef": "Zero-consumption Connections"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Connections Jumped 3x"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Connections Jumped 3x",
+              "nativeQueryRef": "Connections Jumped 3x"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Connections Dropped to Zero"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Connections Dropped to Zero",
+              "nativeQueryRef": "Connections Dropped to Zero"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true,
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'By region'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

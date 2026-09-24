@@ -1,0 +1,66 @@
+table Tariff
+	lineageTag: beb127d5-2003-5a9c-b45c-7fc5204106f4
+
+	column tariff_code
+		dataType: string
+		lineageTag: 11f1fbb8-b94e-5cf2-a25c-38689326abe6
+		summarizeBy: none
+		sourceColumn: tariff_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column tariff_desc
+		dataType: string
+		lineageTag: d8dd184a-11db-596d-a099-73dbebca4fde
+		summarizeBy: none
+		sourceColumn: tariff_desc
+
+		annotation SummarizationSetBy = Automatic
+
+	column category_desc
+		dataType: string
+		lineageTag: b34c77e9-6681-50da-86ef-42375ea63190
+		summarizeBy: none
+		sourceColumn: category_desc
+
+		annotation SummarizationSetBy = Automatic
+
+	column sector_code
+		dataType: string
+		lineageTag: 581432b5-246d-5e99-89f8-e71f137be291
+		summarizeBy: none
+		sourceColumn: sector_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column sector_desc
+		dataType: string
+		lineageTag: b21a0719-99cf-51c8-b418-fd4b88f45aea
+		summarizeBy: none
+		sourceColumn: sector_desc
+
+		annotation SummarizationSetBy = Automatic
+
+	column sector_type
+		dataType: string
+		lineageTag: dda7f771-ef22-5bb2-b642-f48b51992c18
+		summarizeBy: none
+		sourceColumn: sector_type
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Tariff = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT tariff_code, tariff_desc, category_desc, sector_code, sector_desc, sector_type FROM ub.pbi_tariff FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"tariff_code", type text}, {"tariff_desc", type text}, {"category_desc", type text}, {"sector_code", type text}, {"sector_desc", type text}, {"sector_type", type text}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

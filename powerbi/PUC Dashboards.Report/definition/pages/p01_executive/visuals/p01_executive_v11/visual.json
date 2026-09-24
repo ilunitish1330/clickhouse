@@ -1,0 +1,158 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p01_executive_v11",
+  "position": {
+    "x": 12.0,
+    "y": 454.0,
+    "z": 11000,
+    "width": 1256.0,
+    "height": 254.0,
+    "tabOrder": 11000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Utility"
+                    }
+                  },
+                  "Property": "utility_name"
+                }
+              },
+              "queryRef": "Utility.utility_name",
+              "nativeQueryRef": "utility_name"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Utility"
+                    }
+                  },
+                  "Property": "quantity_unit"
+                }
+              },
+              "queryRef": "Utility.quantity_unit",
+              "nativeQueryRef": "quantity_unit"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "Total Revenue"
+                }
+              },
+              "queryRef": "Billing.Total Revenue",
+              "nativeQueryRef": "Total Revenue"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "Total Consumption"
+                }
+              },
+              "queryRef": "Billing.Total Consumption",
+              "nativeQueryRef": "Total Consumption"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "Revenue per Unit"
+                }
+              },
+              "queryRef": "Billing.Revenue per Unit",
+              "nativeQueryRef": "Revenue per Unit"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "Distinct Customers"
+                }
+              },
+              "queryRef": "Billing.Distinct Customers",
+              "nativeQueryRef": "Distinct Customers"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "Revenue Growth %"
+                }
+              },
+              "queryRef": "Billing.Revenue Growth %",
+              "nativeQueryRef": "Revenue Growth %"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "Consumption Growth %"
+                }
+              },
+              "queryRef": "Billing.Consumption Growth %",
+              "nativeQueryRef": "Consumption Growth %"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true,
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Utilities at a glance'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

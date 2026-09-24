@@ -1,0 +1,88 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p08_solar_v09",
+  "position": {
+    "x": 646.0,
+    "y": 454.0,
+    "z": 9000,
+    "width": 622.0,
+    "height": 254.0,
+    "tabOrder": 9000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "pv_label"
+                }
+              },
+              "queryRef": "ConnectionPeriod.pv_label",
+              "nativeQueryRef": "pv_label"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Connections Billed"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Connections Billed",
+              "nativeQueryRef": "Connections Billed"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Average Use per Connection"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Average Use per Connection",
+              "nativeQueryRef": "Average Use per Connection"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true,
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'PV and non-PV connections'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p08_solar_v02",
+  "position": {
+    "x": 12.0,
+    "y": 84,
+    "z": 2000,
+    "width": 305.0,
+    "height": 92,
+    "tabOrder": 2000
+  },
+  "visual": {
+    "visualType": "card",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "PV Customers"
+                }
+              },
+              "queryRef": "Billing.PV Customers",
+              "nativeQueryRef": "PV Customers"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

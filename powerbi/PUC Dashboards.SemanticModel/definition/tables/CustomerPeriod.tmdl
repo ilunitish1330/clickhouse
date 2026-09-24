@@ -1,0 +1,115 @@
+table CustomerPeriod
+	lineageTag: d0cd0943-a05c-5482-b3b8-2c133d7c1534
+
+	measure 'Customers in Band' = DISTINCTCOUNT(CustomerPeriod[customer_id])
+		formatString: #,0
+		displayFolder: Analytics
+		lineageTag: b97a50ce-94ba-558e-8cf1-9a0ffd407f0e
+
+	measure 'Customer Revenue' = SUM(CustomerPeriod[amount])
+		formatString: #,0
+		displayFolder: Analytics
+		lineageTag: 37fb1e27-71e1-5c09-9df7-b6ab11da7e5f
+
+	measure 'Customer Revenue Share %' = DIVIDE([Customer Revenue], CALCULATE([Customer Revenue], ALLSELECTED()))
+		formatString: 0.0%
+		displayFolder: Analytics
+		lineageTag: cf510e67-fbac-5bf6-87d9-4de63111f4ce
+
+	measure 'Multi-utility Customers' = CALCULATE(DISTINCTCOUNT(CustomerPeriod[customer_id]), CustomerPeriod[utility_mix] = "Electricity and water")
+		formatString: #,0
+		displayFolder: Analytics
+		lineageTag: 13f8f58d-f643-5f87-8240-32e6eab2509b
+
+	column period
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		isHidden
+		lineageTag: bd9c06f0-ce4c-5ba6-ba97-0c349f993744
+		summarizeBy: none
+		sourceColumn: period
+
+		annotation SummarizationSetBy = Automatic
+
+	column utility_code
+		dataType: int64
+		isHidden
+		lineageTag: 1a4b9602-b92b-5ec1-a099-d9795f5f3668
+		summarizeBy: none
+		sourceColumn: utility_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column customer_id
+		dataType: string
+		lineageTag: 5539b5aa-f503-57d3-bc24-bcaf59bc61c2
+		summarizeBy: none
+		sourceColumn: customer_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column amount
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 88f35713-1182-5df5-affd-0dd6b5e4fa66
+		summarizeBy: sum
+		sourceColumn: amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column consumption_qty
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 6659dd7d-082a-5f94-ab37-92018acdb8ab
+		summarizeBy: sum
+		sourceColumn: consumption_qty
+
+		annotation SummarizationSetBy = Automatic
+
+	column invoices
+		dataType: int64
+		lineageTag: e6343644-6892-553b-98b9-8b3067e5a5d9
+		summarizeBy: none
+		sourceColumn: invoices
+
+		annotation SummarizationSetBy = Automatic
+
+	column bill_band
+		dataType: string
+		lineageTag: c57966f6-409f-5978-b4e4-f2babb2b5bf5
+		summarizeBy: none
+		sourceColumn: bill_band
+
+		annotation SummarizationSetBy = Automatic
+
+	column pareto_band
+		dataType: string
+		lineageTag: 33a55e52-4b37-57c3-99ef-302e2f3d6706
+		summarizeBy: none
+		sourceColumn: pareto_band
+
+		annotation SummarizationSetBy = Automatic
+
+	column utility_mix
+		dataType: string
+		lineageTag: 24b98fbd-d0ce-533e-bacd-a0b8db9db1f5
+		summarizeBy: none
+		sourceColumn: utility_mix
+
+		annotation SummarizationSetBy = Automatic
+
+	partition CustomerPeriod = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT period, utility_code, customer_id, amount, consumption_qty, invoices, bill_band, pareto_band, utility_mix FROM ub.pbi_customer_period FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"period", type date}, {"utility_code", Int64.Type}, {"customer_id", type text}, {"amount", type number}, {"consumption_qty", type number}, {"invoices", Int64.Type}, {"bill_band", type text}, {"pareto_band", type text}, {"utility_mix", type text}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

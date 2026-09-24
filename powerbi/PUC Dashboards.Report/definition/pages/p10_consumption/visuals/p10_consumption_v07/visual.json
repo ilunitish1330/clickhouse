@@ -1,0 +1,96 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p10_consumption_v07",
+  "position": {
+    "x": 12.0,
+    "y": 188.0,
+    "z": 7000,
+    "width": 622.0,
+    "height": 254.0,
+    "tabOrder": 7000
+  },
+  "visual": {
+    "visualType": "clusteredColumnChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "consumption_band"
+                }
+              },
+              "queryRef": "ConnectionPeriod.consumption_band",
+              "nativeQueryRef": "consumption_band"
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Connections Billed"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Connections Billed",
+              "nativeQueryRef": "Connections Billed"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "ConnectionPeriod"
+                  }
+                },
+                "Property": "consumption_band"
+              }
+            },
+            "direction": "Ascending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    },
+    "drillFilterOtherVisuals": true,
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Connections by consumption band'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

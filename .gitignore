@@ -5,3 +5,5 @@ Statistic*.csv
 *.zip
 models/
 .auto_load.lock
+**/.pbi/localSettings.json
+**/.pbi/cache.abf

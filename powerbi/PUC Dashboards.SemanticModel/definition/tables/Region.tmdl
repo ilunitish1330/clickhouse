@@ -1,0 +1,34 @@
+table Region
+	lineageTag: 31f074ba-870e-532b-b857-ff13bc7d8a6a
+
+	column region_code
+		dataType: int64
+		lineageTag: b3a7f75b-2e9f-5de9-88b9-78bcf2da0cf8
+		summarizeBy: none
+		sourceColumn: region_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column region_name
+		dataType: string
+		lineageTag: 0398107f-e508-56f9-9a4b-09fa967cad34
+		summarizeBy: none
+		sourceColumn: region_name
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Region = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT region_code, region_name FROM ub.dim_region FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"region_code", Int64.Type}, {"region_name", type text}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

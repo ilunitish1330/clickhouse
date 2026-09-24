@@ -1,0 +1,129 @@
+table ConnectionPeriod
+	lineageTag: 4f6c0879-0c35-51dc-b52c-4eb2f629ace9
+
+	measure 'Connections Billed' = COUNTROWS(ConnectionPeriod)
+		formatString: #,0
+		displayFolder: Analytics
+		lineageTag: 8ecc6411-fbe4-5d61-9bd1-9afda43c72dc
+
+	measure 'Average Use per Connection' = IF(DISTINCTCOUNT(ConnectionPeriod[utility_code]) = 1, AVERAGE(ConnectionPeriod[consumption_qty]))
+		formatString: #,0.00
+		displayFolder: Analytics
+		lineageTag: 98f6c165-be1a-508c-93ec-a520bd556fcd
+
+	measure 'Zero-consumption Connections' = CALCULATE(COUNTROWS(ConnectionPeriod), ConnectionPeriod[consumption_qty] <= 0)
+		formatString: #,0
+		displayFolder: Analytics
+		lineageTag: ef246aff-d210-5a8d-bb99-d37efc0ea679
+
+	measure 'Connections Jumped 3x' = CALCULATE(COUNTROWS(ConnectionPeriod), ConnectionPeriod[change_flag] = "Jumped 3x or more")
+		formatString: #,0
+		displayFolder: Analytics
+		lineageTag: 18562ca6-8597-5a62-9040-33ec047526c0
+
+	measure 'Connections Dropped to Zero' = CALCULATE(COUNTROWS(ConnectionPeriod), ConnectionPeriod[change_flag] = "Dropped to zero")
+		formatString: #,0
+		displayFolder: Analytics
+		lineageTag: 18d9a0e6-a3f1-54ed-9766-a00e8ea772b7
+
+	column period
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		isHidden
+		lineageTag: f49d7158-c0d8-5f2c-91d8-74dea4f2d526
+		summarizeBy: none
+		sourceColumn: period
+
+		annotation SummarizationSetBy = Automatic
+
+	column utility_code
+		dataType: int64
+		isHidden
+		lineageTag: d49d8cd8-f7db-5872-924e-a9674122a451
+		summarizeBy: none
+		sourceColumn: utility_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column connection_id
+		dataType: string
+		lineageTag: 47a603e0-d721-5eb4-8aee-9ce99d53ac31
+		summarizeBy: none
+		sourceColumn: connection_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column region_code
+		dataType: int64
+		isHidden
+		lineageTag: fff44119-3af0-5f83-af00-e4aec43171c1
+		summarizeBy: none
+		sourceColumn: region_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column pv_connection
+		dataType: int64
+		lineageTag: 81599980-ba2a-5b8a-8dc7-c0799edcb0e0
+		summarizeBy: none
+		sourceColumn: pv_connection
+
+		annotation SummarizationSetBy = Automatic
+
+	column pv_label
+		dataType: string
+		lineageTag: a5f07aaa-f7c8-596d-b114-6a4969ca3b59
+		summarizeBy: none
+		sourceColumn: pv_label
+
+		annotation SummarizationSetBy = Automatic
+
+	column amount
+		dataType: double
+		formatString: #,0.00
+		lineageTag: a8147ede-6ebf-5ed8-b170-335646b34cd3
+		summarizeBy: sum
+		sourceColumn: amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column consumption_qty
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 3a1eaf9a-ea46-505e-b54d-6c9503c9a2df
+		summarizeBy: sum
+		sourceColumn: consumption_qty
+
+		annotation SummarizationSetBy = Automatic
+
+	column consumption_band
+		dataType: string
+		lineageTag: 22770e27-7596-5d22-a5f2-61da1be8c36e
+		summarizeBy: none
+		sourceColumn: consumption_band
+
+		annotation SummarizationSetBy = Automatic
+
+	column change_flag
+		dataType: string
+		lineageTag: 58f7997d-c682-5920-b8db-1ebc8e132143
+		summarizeBy: none
+		sourceColumn: change_flag
+
+		annotation SummarizationSetBy = Automatic
+
+	partition ConnectionPeriod = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT period, utility_code, connection_id, region_code, pv_connection, pv_label, amount, consumption_qty, consumption_band, change_flag FROM ub.pbi_connection_period FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"period", type date}, {"utility_code", Int64.Type}, {"connection_id", type text}, {"region_code", Int64.Type}, {"pv_connection", Int64.Type}, {"pv_label", type text}, {"amount", type number}, {"consumption_qty", type number}, {"consumption_band", type text}, {"change_flag", type text}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

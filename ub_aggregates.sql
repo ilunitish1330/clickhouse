@@ -135,3 +135,97 @@ CREATE OR REPLACE VIEW ub.v_batches AS
 SELECT batch_id, period_month, count() AS lines, sum(amount) AS amount,
        uniqExact(invoice_id) AS invoices, max(date_exact) AS has_exact_dates
 FROM ub.fact_billing GROUP BY batch_id, period_month;
+
+-- ============ Power BI layer ============
+-- What the Power BI report (powerbi/) imports, over plain HTTP. Labels are
+-- joined in here so the report needs no Power Query work. Row-level billing
+-- is imported (581k rows is small for Power BI) because distinct counts of
+-- customers, connections, meters and invoices are only exact at that level.
+
+-- The billing periods present, numbered so "previous period" means the
+-- previous period IN THE DATA (June 2025 -> January 2026 has no months between).
+CREATE OR REPLACE TABLE ub.pbi_period ENGINE = MergeTree ORDER BY period AS
+SELECT period, formatDateTime(period, '%Y-%m') AS year_month,
+       formatDateTime(period, '%b %Y') AS period_label, toYear(period) AS year,
+       toUInt32(row_number() OVER (ORDER BY period)) AS period_index
+FROM (SELECT DISTINCT period_month AS period FROM ub.fact_billing WHERE period_month > '1970-01-01');
+
+CREATE OR REPLACE VIEW ub.pbi_billing AS
+SELECT period_month AS period, utility_code, region_code, tariff_code, charge_key,
+       customer_id, connection_id, meter_id, invoice_id, invoice_prefix,
+       water_source, water_node, pv_connection,
+       if(utility_code = 1, 'kWh', 'm3')      AS unit,
+       amount, quantity,
+       if(charge_type = 1, quantity, 0)      AS consumption_qty,
+       if(charge_type = 1, amount, 0)        AS consumption_amount,
+       if(charge_type = 2, amount, 0)        AS adjustment_amount,
+       if(charge_type = 2, quantity, 0)      AS adjustment_qty,
+       if(amount < 0, amount, 0)             AS credit_amount,
+       toUInt8(meter_id != '')               AS has_meter
+FROM ub.fact_billing;
+
+-- sector_type groups the 14 sectors the way the KPI catalogue speaks of them.
+CREATE OR REPLACE VIEW ub.pbi_tariff AS
+SELECT tariff_code, tariff_desc, category_desc, sector_code, sector_desc,
+       multiIf(positionCaseInsensitive(sector_desc, 'domestic') > 0, 'Domestic',
+               positionCaseInsensitive(sector_desc, 'commercial') > 0, 'Commercial',
+               positionCaseInsensitive(sector_desc, 'government') > 0, 'Government', 'Other') AS sector_type
+FROM ub.dim_tariff;
+
+CREATE OR REPLACE VIEW ub.pbi_charge_type AS
+SELECT charge_key, charge_desc, value_desc, origin_desc, is_pv, is_free_text,
+       toUInt8(charge_type = 1) AS is_consumption, toUInt8(charge_type = 2) AS is_adjustment
+FROM ub.dim_charge_type;
+
+-- One row per customer, utility and period: bill size, Pareto position,
+-- whether the customer also takes the other utility.
+CREATE OR REPLACE TABLE ub.pbi_customer_period
+ENGINE = MergeTree ORDER BY (period, utility_code, customer_id) AS
+SELECT period, utility_code, customer_id,
+       toDecimal64(amt, 4) AS amount, toDecimal64(cons, 4) AS consumption_qty, inv AS invoices,
+       multiIf(amt < 0, '1 Credit', amt < 100, '2 Under 100', amt < 500, '3 100-500',
+               amt < 1000, '4 500-1,000', amt < 5000, '5 1,000-5,000',
+               amt < 20000, '6 5,000-20,000', '7 20,000 and over') AS bill_band,
+       multiIf(rn <= 0.01 * n, '1 Top 1%', rn <= 0.10 * n, '2 Top 1-10%',
+               rn <= 0.50 * n, '3 Top 10-50%', '4 Bottom 50%') AS pareto_band,
+       if(has_elec AND has_water, 'Electricity and water', 'One utility') AS utility_mix
+FROM (
+    SELECT *, row_number() OVER (PARTITION BY period, utility_code ORDER BY amt DESC) AS rn,
+              count() OVER (PARTITION BY period, utility_code) AS n,
+              max(utility_code = 1) OVER (PARTITION BY period, customer_id) AS has_elec,
+              max(utility_code = 3) OVER (PARTITION BY period, customer_id) AS has_water
+    FROM (SELECT period_month AS period, utility_code, customer_id, sum(amount) AS amt,
+                 sumIf(quantity, charge_type = 1) AS cons, uniqExact(invoice_id) AS inv
+          FROM ub.fact_billing GROUP BY period, utility_code, customer_id));
+
+-- One row per connection, utility and period: consumption band, PV, and how
+-- consumption moved since the previous period in the data.
+CREATE OR REPLACE TABLE ub.pbi_connection_period
+ENGINE = MergeTree ORDER BY (period, utility_code, connection_id) AS
+SELECT period, utility_code, connection_id, region_code, pv_connection,
+       if(pv_connection = 1, 'PV', 'No PV') AS pv_label,
+       toDecimal64(amt, 4) AS amount, toDecimal64(cons, 4) AS consumption_qty,
+       if(utility_code = 1,
+          multiIf(cons <= 0, '0 None', cons <= 100, '1 1-100 kWh', cons <= 200, '2 101-200 kWh',
+                  cons <= 300, '3 201-300 kWh', cons <= 500, '4 301-500 kWh', cons <= 1000, '5 501-1,000 kWh',
+                  cons <= 5000, '6 1,001-5,000 kWh', '7 Over 5,000 kWh'),
+          multiIf(cons <= 0, '0 None', cons <= 5, '1 1-5 m3', cons <= 10, '2 6-10 m3',
+                  cons <= 20, '3 11-20 m3', cons <= 50, '4 21-50 m3', cons <= 100, '5 51-100 m3',
+                  cons <= 500, '6 101-500 m3', '7 Over 500 m3')) AS consumption_band,
+       multiIf(prev_idx IS NULL OR prev_idx != period_index - 1, 'First period',
+               prev_cons > 0 AND cons <= 0, 'Dropped to zero',
+               prev_cons > 0 AND cons >= 3 * prev_cons, 'Jumped 3x or more',
+               prev_cons > 0 AND cons <= prev_cons / 3, 'Fell to a third or less',
+               prev_cons <= 0 AND cons > 0, 'Resumed from zero',
+               cons <= 0, 'Zero in both periods', 'Normal change') AS change_flag
+FROM (
+    SELECT b.*, p.period_index,
+           lagInFrame(toNullable(p.period_index)) OVER w AS prev_idx,
+           lagInFrame(b.cons) OVER w AS prev_cons
+    FROM (SELECT period_month AS period, utility_code, connection_id, any(region_code) AS region_code,
+                 max(pv_connection) AS pv_connection, sum(amount) AS amt,
+                 sumIf(quantity, charge_type = 1) AS cons
+          FROM ub.fact_billing GROUP BY period, utility_code, connection_id) AS b
+    JOIN ub.pbi_period AS p ON p.period = b.period
+    WINDOW w AS (PARTITION BY b.utility_code, b.connection_id ORDER BY p.period_index
+                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING));

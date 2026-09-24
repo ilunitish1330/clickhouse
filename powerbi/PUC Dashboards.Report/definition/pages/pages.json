@@ -1,0 +1,16 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/pagesMetadata/1.0.0/schema.json",
+  "pageOrder": [
+    "p01_executive",
+    "p02_electricity",
+    "p03_water",
+    "p04_sewerage",
+    "p05_tariff",
+    "p06_customers",
+    "p07_controls",
+    "p08_solar",
+    "p09_network",
+    "p10_consumption"
+  ],
+  "activePageName": "p01_executive"
+}

@@ -1,0 +1,43 @@
+relationship ddd90796-394c-56e9-bfaa-db7806690b4c
+	fromColumn: Billing.period
+	toColumn: Period.period
+	joinOnDateBehavior: datePartOnly
+
+relationship b1137d1d-54ff-573f-9afc-a972f8865057
+	fromColumn: Billing.utility_code
+	toColumn: Utility.utility_code
+
+relationship 8f017046-1d80-5c41-988f-0e5f92b50ecd
+	fromColumn: Billing.region_code
+	toColumn: Region.region_code
+
+relationship c53214d7-1803-547b-9ad5-7230eae3549e
+	fromColumn: Billing.tariff_code
+	toColumn: Tariff.tariff_code
+
+relationship d9ecfdcf-f959-5d42-8987-9c3b0fffa198
+	fromColumn: Billing.charge_key
+	toColumn: ChargeType.charge_key
+
+relationship d1979ec2-74bc-5c67-ad96-712053c1d086
+	fromColumn: CustomerPeriod.period
+	toColumn: Period.period
+	joinOnDateBehavior: datePartOnly
+
+relationship bfa558b6-bfa4-5b12-be94-0962b3f593f3
+	fromColumn: CustomerPeriod.utility_code
+	toColumn: Utility.utility_code
+
+relationship 39dc8079-df44-5ac4-b666-d9169a59ddd6
+	fromColumn: ConnectionPeriod.period
+	toColumn: Period.period
+	joinOnDateBehavior: datePartOnly
+
+relationship 6192df79-4961-54d2-96a7-1207f8f3b17f
+	fromColumn: ConnectionPeriod.utility_code
+	toColumn: Utility.utility_code
+
+relationship 515c6511-f2c9-5d72-9086-5682829b3420
+	fromColumn: ConnectionPeriod.region_code
+	toColumn: Region.region_code
+

@@ -1,0 +1,82 @@
+table ChargeType
+	lineageTag: e2641b21-943b-5049-aab0-545ffe09a532
+
+	column charge_key
+		dataType: string
+		lineageTag: 63133382-745c-5028-a743-23b4b9093982
+		summarizeBy: none
+		sourceColumn: charge_key
+
+		annotation SummarizationSetBy = Automatic
+
+	column charge_desc
+		dataType: string
+		lineageTag: c9794e1b-beea-58c8-8886-8e6168c8a77d
+		summarizeBy: none
+		sourceColumn: charge_desc
+
+		annotation SummarizationSetBy = Automatic
+
+	column value_desc
+		dataType: string
+		lineageTag: c3686d17-89aa-56a1-a44d-2dbc5f8c5ad7
+		summarizeBy: none
+		sourceColumn: value_desc
+
+		annotation SummarizationSetBy = Automatic
+
+	column origin_desc
+		dataType: string
+		lineageTag: 43b9a570-4e54-545a-bb09-c22f24fa5061
+		summarizeBy: none
+		sourceColumn: origin_desc
+
+		annotation SummarizationSetBy = Automatic
+
+	column is_pv
+		dataType: int64
+		lineageTag: 5bbef7dc-4bb5-5517-8c3d-b038e9f59725
+		summarizeBy: none
+		sourceColumn: is_pv
+
+		annotation SummarizationSetBy = Automatic
+
+	column is_free_text
+		dataType: int64
+		lineageTag: b5a1ab04-6cb2-55c5-9e29-6cf22e8f1c4c
+		summarizeBy: none
+		sourceColumn: is_free_text
+
+		annotation SummarizationSetBy = Automatic
+
+	column is_consumption
+		dataType: int64
+		lineageTag: 9b5fa53f-420e-57c1-963d-da51fefffcec
+		summarizeBy: none
+		sourceColumn: is_consumption
+
+		annotation SummarizationSetBy = Automatic
+
+	column is_adjustment
+		dataType: int64
+		lineageTag: 614a935b-99bf-546b-a85d-0c1b94fbd48c
+		summarizeBy: none
+		sourceColumn: is_adjustment
+
+		annotation SummarizationSetBy = Automatic
+
+	partition ChargeType = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT charge_key, charge_desc, value_desc, origin_desc, is_pv, is_free_text, is_consumption, is_adjustment FROM ub.pbi_charge_type FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"charge_key", type text}, {"charge_desc", type text}, {"value_desc", type text}, {"origin_desc", type text}, {"is_pv", Int64.Type}, {"is_free_text", Int64.Type}, {"is_consumption", Int64.Type}, {"is_adjustment", Int64.Type}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

@@ -1,0 +1,440 @@
+table Billing
+	lineageTag: deb2d7f4-9b56-5c2e-a4aa-0a94b55e867d
+
+	measure 'Total Revenue' = SUM(Billing[amount])
+		formatString: #,0
+		displayFolder: Revenue
+		lineageTag: 963a5eb0-88a3-523a-b9c4-8e4218651078
+
+	measure 'Revenue Previous Period' =
+			VAR i = MAX(Period[period_index])
+			RETURN CALCULATE([Total Revenue], REMOVEFILTERS(Period), Period[period_index] = i - 1)
+		formatString: #,0
+		displayFolder: Revenue
+		lineageTag: 28ef8021-0838-5081-a59e-0c1b0394bb49
+
+	measure 'Revenue Growth %' =
+			VAR i = MAX(Period[period_index])
+			VAR cur = CALCULATE([Total Revenue], Period[period_index] = i)
+			VAR p = [Revenue Previous Period]
+			RETURN IF(NOT ISBLANK(p) && p <> 0, DIVIDE(cur - p, ABS(p)))
+		formatString: 0.0%
+		displayFolder: Revenue
+		lineageTag: 0cd23d13-8fc7-5e6f-9961-ae715d8acdc4
+
+	measure 'Average Revenue per Customer' = DIVIDE([Total Revenue], [Distinct Customers])
+		formatString: #,0.00
+		displayFolder: Revenue
+		lineageTag: 0b5c7895-eb4a-56cd-92ca-c6699e7db667
+
+	measure 'Average Revenue per Connection' = DIVIDE([Total Revenue], [Distinct Connections])
+		formatString: #,0.00
+		displayFolder: Revenue
+		lineageTag: ea796181-ec2a-5ac8-977c-5bc6eec7bac2
+
+	measure 'Average Revenue per Invoice' = DIVIDE([Total Revenue], [Invoice Count])
+		formatString: #,0.00
+		displayFolder: Revenue
+		lineageTag: a2fc4972-3d6f-56b4-9eb4-108ad77cf8e1
+
+	measure 'Revenue Share %' = DIVIDE([Total Revenue], CALCULATE([Total Revenue], ALLSELECTED()))
+		formatString: 0.0%
+		displayFolder: Revenue
+		lineageTag: c6996513-0043-5972-bc6b-e8982a6f923f
+
+	measure 'Domestic Revenue' = CALCULATE([Total Revenue], Tariff[sector_type] = "Domestic")
+		formatString: #,0
+		displayFolder: Revenue
+		lineageTag: 7579a03d-5880-58b6-8b23-e5bf87914776
+
+	measure 'Commercial Revenue' = CALCULATE([Total Revenue], Tariff[sector_type] = "Commercial")
+		formatString: #,0
+		displayFolder: Revenue
+		lineageTag: c54ec2ff-87cd-5a86-999e-ff58210160b7
+
+	measure 'Government Revenue' = CALCULATE([Total Revenue], Tariff[sector_type] = "Government")
+		formatString: #,0
+		displayFolder: Revenue
+		lineageTag: 10555f7a-e497-5ecd-b70b-8f4ede554166
+
+	measure 'Total Consumption' = IF(DISTINCTCOUNT(Billing[unit]) = 1, SUM(Billing[quantity]))
+		formatString: #,0
+		displayFolder: Consumption
+		lineageTag: 66dc9be6-bbbc-5f22-b97a-6de5aa50e19b
+
+	measure 'Consumption Item Quantity' = IF(DISTINCTCOUNT(Billing[unit]) = 1, SUM(Billing[consumption_qty]))
+		formatString: #,0
+		displayFolder: Consumption
+		lineageTag: f60accd3-d2f3-5618-9ca2-ce1c07e8498b
+
+	measure 'Consumption Item Revenue' = SUM(Billing[consumption_amount])
+		formatString: #,0
+		displayFolder: Consumption
+		lineageTag: be4fd1e2-2267-5a00-a4e4-e2a7e0067104
+
+	measure 'Average Consumption Bill' = DIVIDE([Consumption Item Revenue], [Consumption Item Quantity])
+		formatString: #,0.00
+		displayFolder: Consumption
+		lineageTag: 0cacfa4e-218b-5443-bb55-ecdf24417fc1
+
+	measure 'Revenue per Unit' = DIVIDE([Total Revenue], [Total Consumption])
+		formatString: #,0.00
+		displayFolder: Consumption
+		lineageTag: 5cc1cea8-449a-5be6-908b-b8f97bd81823
+
+	measure 'Average Consumption per Customer' = DIVIDE([Total Consumption], [Distinct Customers])
+		formatString: #,0.00
+		displayFolder: Consumption
+		lineageTag: 43586fc0-6f20-5e5f-aeae-f105043b3135
+
+	measure 'Average Consumption per Connection' = DIVIDE([Total Consumption], [Distinct Connections])
+		formatString: #,0.00
+		displayFolder: Consumption
+		lineageTag: 03d2b470-a125-5e9c-9a8f-1f252c7830f1
+
+	measure 'Average Consumption per Invoice' = DIVIDE([Total Consumption], [Invoice Count])
+		formatString: #,0.00
+		displayFolder: Consumption
+		lineageTag: bf01371b-db42-5df8-bce8-303f074435e1
+
+	measure 'Consumption Previous Period' =
+			VAR i = MAX(Period[period_index])
+			RETURN CALCULATE([Total Consumption], REMOVEFILTERS(Period), Period[period_index] = i - 1)
+		formatString: #,0
+		displayFolder: Consumption
+		lineageTag: ea057f13-c535-5e82-b9db-91551f885024
+
+	measure 'Consumption Growth %' =
+			VAR i = MAX(Period[period_index])
+			VAR cur = CALCULATE([Total Consumption], Period[period_index] = i)
+			VAR p = [Consumption Previous Period]
+			RETURN IF(NOT ISBLANK(p) && p <> 0, DIVIDE(cur - p, ABS(p)))
+		formatString: 0.0%
+		displayFolder: Consumption
+		lineageTag: 2e5ed583-ea8d-59ce-a1da-6a9438eab113
+
+	measure 'Consumption Share %' = DIVIDE([Total Consumption], CALCULATE([Total Consumption], ALLSELECTED()))
+		formatString: 0.0%
+		displayFolder: Consumption
+		lineageTag: 2b955b37-6973-5ad3-903d-851868b0ff83
+
+	measure 'Domestic Consumption' = CALCULATE([Total Consumption], Tariff[sector_type] = "Domestic")
+		formatString: #,0
+		displayFolder: Consumption
+		lineageTag: 471993e5-effb-59ff-bc9d-1132e9fb5113
+
+	measure 'Commercial Consumption' = CALCULATE([Total Consumption], Tariff[sector_type] = "Commercial")
+		formatString: #,0
+		displayFolder: Consumption
+		lineageTag: dbbc880b-f8a9-519c-a4fe-2be71e5bf594
+
+	measure 'Distinct Customers' = DISTINCTCOUNT(Billing[customer_id])
+		formatString: #,0
+		displayFolder: Customers
+		lineageTag: 97dcdf6d-fb17-5819-a456-1c26e2454985
+
+	measure 'Distinct Connections' = DISTINCTCOUNT(Billing[connection_id])
+		formatString: #,0
+		displayFolder: Customers
+		lineageTag: ccfe9e1a-b4ce-54b7-9235-d0f5bc481fa7
+
+	measure 'Distinct Meters' = CALCULATE(DISTINCTCOUNT(Billing[meter_id]), Billing[has_meter] = 1)
+		formatString: #,0
+		displayFolder: Customers
+		lineageTag: 4541f0e7-90f3-5f91-bb93-6902dbd18ce7
+
+	measure 'Invoice Count' = DISTINCTCOUNT(Billing[invoice_id])
+		formatString: #,0
+		displayFolder: Customers
+		lineageTag: b76197bb-9821-550e-bf22-b82c5983da59
+
+	measure 'Billing Lines' = COUNTROWS(Billing)
+		formatString: #,0
+		displayFolder: Customers
+		lineageTag: cb488dd4-4a03-558e-8520-4c1525acc6de
+
+	measure 'Customers Previous Period' =
+			VAR i = MAX(Period[period_index])
+			RETURN CALCULATE([Distinct Customers], REMOVEFILTERS(Period), Period[period_index] = i - 1)
+		formatString: #,0
+		displayFolder: Customers
+		lineageTag: d7342d07-7a47-58c1-a3ab-563df4cff6bf
+
+	measure 'Customer Growth %' =
+			VAR i = MAX(Period[period_index])
+			VAR cur = CALCULATE([Distinct Customers], Period[period_index] = i)
+			VAR p = [Customers Previous Period]
+			RETURN IF(NOT ISBLANK(p) && p <> 0, DIVIDE(cur - p, ABS(p)))
+		formatString: 0.0%
+		displayFolder: Customers
+		lineageTag: c20f3135-7473-5979-b51a-27c10be403a0
+
+	measure 'Customer Share %' = DIVIDE([Distinct Customers], CALCULATE([Distinct Customers], ALLSELECTED()))
+		formatString: 0.0%
+		displayFolder: Customers
+		lineageTag: 1cf720b8-09f3-5e2b-9fd6-e9b4bad6fb59
+
+	measure 'Adjustment Amount' = SUM(Billing[adjustment_amount])
+		formatString: #,0
+		displayFolder: Controls
+		lineageTag: 8ae9e0fd-b3a6-516d-aa5e-9c467132d5e7
+
+	measure 'Adjusted Quantity' = IF(DISTINCTCOUNT(Billing[unit]) = 1, SUM(Billing[adjustment_qty]))
+		formatString: #,0
+		displayFolder: Controls
+		lineageTag: cc05b8d1-4120-5fde-8da8-37f8e7c08375
+
+	measure 'Adjustment Rate %' = DIVIDE(ABS([Adjustment Amount]), ABS([Total Revenue]))
+		formatString: 0.0%
+		displayFolder: Controls
+		lineageTag: c0e748e7-ea2e-5f4b-ac28-b5857978be7b
+
+	measure 'Credit Amount' = SUM(Billing[credit_amount])
+		formatString: #,0
+		displayFolder: Controls
+		lineageTag: 4134f34a-34b5-5b5a-9593-7befe12604e2
+
+	measure 'Credit Share %' = DIVIDE(ABS([Credit Amount]), ABS([Total Revenue]))
+		formatString: 0.0%
+		displayFolder: Controls
+		lineageTag: 115cb80b-b67d-506e-bd7b-d0ec998e238f
+
+	measure 'Invoice Share %' = DIVIDE([Invoice Count], CALCULATE([Invoice Count], ALLSELECTED()))
+		formatString: 0.0%
+		displayFolder: Controls
+		lineageTag: 030e2031-3398-54a3-9bf4-e1765fd86f7c
+
+	measure 'Free-text Invoices' = CALCULATE([Invoice Count], ChargeType[is_free_text] = 1)
+		formatString: #,0
+		displayFolder: Controls
+		lineageTag: d31d9ae8-edba-5e6d-a8d7-929beafeaec9
+
+	measure 'Connections without Meter' = CALCULATE([Distinct Connections], Billing[has_meter] = 0)
+		formatString: #,0
+		displayFolder: Controls
+		lineageTag: afa7dd73-f8d9-51d7-bf1b-0f0e23ac2fd9
+
+	measure 'PV Customers' = CALCULATE([Distinct Customers], Billing[pv_connection] = 1)
+		formatString: #,0
+		displayFolder: Solar PV
+		lineageTag: 2e77c08c-8b4c-5d2a-91a1-573d9bf891fe
+
+	measure 'PV Connections' = CALCULATE([Distinct Connections], Billing[pv_connection] = 1)
+		formatString: #,0
+		displayFolder: Solar PV
+		lineageTag: 4edc6c36-cc74-5838-aeec-244828569427
+
+	measure 'PV Billing' = CALCULATE([Total Revenue], ChargeType[is_pv] = 1)
+		formatString: #,0
+		displayFolder: Solar PV
+		lineageTag: 8210ead2-0d21-5c10-b96e-960c6a7fa56f
+
+	measure 'PV Billing Share %' = DIVIDE([PV Billing], [Total Revenue])
+		formatString: 0.0%
+		displayFolder: Solar PV
+		lineageTag: ddbfe428-75d6-5e22-81a4-885c5398bba3
+
+	column period
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		isHidden
+		lineageTag: 5d651b5d-d3a2-5905-8209-99ac77ce3b54
+		summarizeBy: none
+		sourceColumn: period
+
+		annotation SummarizationSetBy = Automatic
+
+	column utility_code
+		dataType: int64
+		isHidden
+		lineageTag: 092b8ff4-c5cb-515c-ab46-49764a6d9260
+		summarizeBy: none
+		sourceColumn: utility_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column region_code
+		dataType: int64
+		isHidden
+		lineageTag: f5a654e7-b7e6-52ba-85bb-88293e6e8e50
+		summarizeBy: none
+		sourceColumn: region_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column tariff_code
+		dataType: string
+		isHidden
+		lineageTag: 8aa4812a-473a-59da-8e8b-39133cb6a757
+		summarizeBy: none
+		sourceColumn: tariff_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column charge_key
+		dataType: string
+		isHidden
+		lineageTag: 0bf77dbb-7d6d-594e-af9d-38f4fb044ea6
+		summarizeBy: none
+		sourceColumn: charge_key
+
+		annotation SummarizationSetBy = Automatic
+
+	column customer_id
+		dataType: string
+		lineageTag: 4458cdda-5e6e-5690-aa30-78829fec8e1a
+		summarizeBy: none
+		sourceColumn: customer_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column connection_id
+		dataType: string
+		lineageTag: 373deb64-665e-57d7-8905-ccc283656569
+		summarizeBy: none
+		sourceColumn: connection_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column meter_id
+		dataType: string
+		lineageTag: 5806d5c4-c653-5b83-b874-3145455135ce
+		summarizeBy: none
+		sourceColumn: meter_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column invoice_id
+		dataType: string
+		lineageTag: c03e6592-d99a-5555-83db-5b1bb26a63cb
+		summarizeBy: none
+		sourceColumn: invoice_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column invoice_prefix
+		dataType: string
+		lineageTag: 6a51b09e-a615-580f-aef2-d2de0431bae6
+		summarizeBy: none
+		sourceColumn: invoice_prefix
+
+		annotation SummarizationSetBy = Automatic
+
+	column water_source
+		dataType: string
+		lineageTag: 0c393bcd-2c26-57c6-b7ea-a3c21111e9d1
+		summarizeBy: none
+		sourceColumn: water_source
+
+		annotation SummarizationSetBy = Automatic
+
+	column water_node
+		dataType: string
+		lineageTag: 2fda1d35-04c9-5782-8052-62d25b4cf176
+		summarizeBy: none
+		sourceColumn: water_node
+
+		annotation SummarizationSetBy = Automatic
+
+	column pv_connection
+		dataType: int64
+		lineageTag: db9a14ab-6e47-5237-bae8-68ff59e04c20
+		summarizeBy: none
+		sourceColumn: pv_connection
+
+		annotation SummarizationSetBy = Automatic
+
+	column unit
+		dataType: string
+		lineageTag: 6d541831-40cb-58a3-96db-9243795fd329
+		summarizeBy: none
+		sourceColumn: unit
+
+		annotation SummarizationSetBy = Automatic
+
+	column amount
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 335c4979-6332-53f6-92a7-5c06cdc7c317
+		summarizeBy: sum
+		sourceColumn: amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column quantity
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 3c5ce240-46e3-5d9d-8ca4-a93e83fe6643
+		summarizeBy: sum
+		sourceColumn: quantity
+
+		annotation SummarizationSetBy = Automatic
+
+	column consumption_qty
+		dataType: double
+		formatString: #,0.00
+		lineageTag: a97a0363-642e-5e99-942c-4ce3dd3a29e6
+		summarizeBy: sum
+		sourceColumn: consumption_qty
+
+		annotation SummarizationSetBy = Automatic
+
+	column consumption_amount
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 744af75a-c7d0-5805-9cac-6af3a9d2f68f
+		summarizeBy: sum
+		sourceColumn: consumption_amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column adjustment_amount
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 99540581-6459-5856-9d07-83a3e46043c5
+		summarizeBy: sum
+		sourceColumn: adjustment_amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column adjustment_qty
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 2259da75-9c2a-525e-8b28-443a527f9319
+		summarizeBy: sum
+		sourceColumn: adjustment_qty
+
+		annotation SummarizationSetBy = Automatic
+
+	column credit_amount
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 636df28f-78fa-5200-af69-1f9734a236a4
+		summarizeBy: sum
+		sourceColumn: credit_amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column has_meter
+		dataType: int64
+		lineageTag: 478d1da8-287d-50d6-849b-8c541efa70cf
+		summarizeBy: none
+		sourceColumn: has_meter
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Billing = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT period, utility_code, region_code, tariff_code, charge_key, customer_id, connection_id, meter_id, invoice_id, invoice_prefix, water_source, water_node, pv_connection, unit, amount, quantity, consumption_qty, consumption_amount, adjustment_amount, adjustment_qty, credit_amount, has_meter FROM ub.pbi_billing FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"period", type date}, {"utility_code", Int64.Type}, {"region_code", Int64.Type}, {"tariff_code", type text}, {"charge_key", type text}, {"customer_id", type text}, {"connection_id", type text}, {"meter_id", type text}, {"invoice_id", type text}, {"invoice_prefix", type text}, {"water_source", type text}, {"water_node", type text}, {"pv_connection", Int64.Type}, {"unit", type text}, {"amount", type number}, {"quantity", type number}, {"consumption_qty", type number}, {"consumption_amount", type number}, {"adjustment_amount", type number}, {"adjustment_qty", type number}, {"credit_amount", type number}, {"has_meter", Int64.Type}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

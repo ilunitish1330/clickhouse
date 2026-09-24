@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p10_consumption_v06",
+  "position": {
+    "x": 963.0,
+    "y": 84,
+    "z": 6000,
+    "width": 305.0,
+    "height": 92,
+    "tabOrder": 6000
+  },
+  "visual": {
+    "visualType": "card",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "ConnectionPeriod"
+                    }
+                  },
+                  "Property": "Connections Dropped to Zero"
+                }
+              },
+              "queryRef": "ConnectionPeriod.Connections Dropped to Zero",
+              "nativeQueryRef": "Connections Dropped to Zero"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

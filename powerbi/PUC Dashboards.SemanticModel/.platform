@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "SemanticModel",
+    "displayName": "PUC Dashboards"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "383f44f7-0dc4-5ec7-9471-e75f3e1ed5c9"
+  }
+}

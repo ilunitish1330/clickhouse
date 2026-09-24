@@ -1,0 +1,62 @@
+table Period
+	lineageTag: d3d63ec1-28f3-5f1a-b77e-75bc11f9804b
+
+	column period
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		lineageTag: d92a097d-f1c1-5b2e-8e71-a09241aaa65b
+		summarizeBy: none
+		sourceColumn: period
+
+		annotation SummarizationSetBy = Automatic
+
+	column year_month
+		dataType: string
+		lineageTag: e7f477a5-7376-5e14-879a-6b33b14dc75d
+		summarizeBy: none
+		sourceColumn: year_month
+		sortByColumn: period_index
+
+		annotation SummarizationSetBy = Automatic
+
+	column period_label
+		dataType: string
+		lineageTag: 8c27c6b1-2a68-57da-a724-187abdedf362
+		summarizeBy: none
+		sourceColumn: period_label
+		sortByColumn: period_index
+
+		annotation SummarizationSetBy = Automatic
+
+	column year
+		dataType: int64
+		lineageTag: 99b901bf-ecc4-5160-a2c3-5e3fa7e428df
+		summarizeBy: none
+		sourceColumn: year
+
+		annotation SummarizationSetBy = Automatic
+
+	column period_index
+		dataType: int64
+		isHidden
+		lineageTag: ca3a3d50-ad4c-5876-9974-83c74706502c
+		summarizeBy: none
+		sourceColumn: period_index
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Period = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT period, year_month, period_label, year, period_index FROM ub.pbi_period FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"period", type date}, {"year_month", type text}, {"period_label", type text}, {"year", Int64.Type}, {"period_index", Int64.Type}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

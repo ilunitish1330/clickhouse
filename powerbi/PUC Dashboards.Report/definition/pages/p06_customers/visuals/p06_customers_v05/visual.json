@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p06_customers_v05",
+  "position": {
+    "x": 646.0,
+    "y": 84,
+    "z": 5000,
+    "width": 199.33333333333334,
+    "height": 92,
+    "tabOrder": 5000
+  },
+  "visual": {
+    "visualType": "card",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Billing"
+                    }
+                  },
+                  "Property": "Average Consumption per Connection"
+                }
+              },
+              "queryRef": "Billing.Average Consumption per Connection",
+              "nativeQueryRef": "Average Consumption per Connection"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

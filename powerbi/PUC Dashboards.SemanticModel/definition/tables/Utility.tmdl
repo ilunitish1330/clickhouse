@@ -1,0 +1,42 @@
+table Utility
+	lineageTag: 5d853c50-683e-52bb-98b8-fdcf969338b8
+
+	column utility_code
+		dataType: int64
+		lineageTag: 41217ece-b650-50c3-93d5-993088552b64
+		summarizeBy: none
+		sourceColumn: utility_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column utility_name
+		dataType: string
+		lineageTag: 6930bba8-8b42-52f8-92b6-aed80fce3c5e
+		summarizeBy: none
+		sourceColumn: utility_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column quantity_unit
+		dataType: string
+		lineageTag: 6a1f8bb3-6b06-5117-a381-715ae9421e9e
+		summarizeBy: none
+		sourceColumn: quantity_unit
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Utility = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(
+				        Web.Contents(ClickHouseUrl, [
+				            Query = [query = "SELECT utility_code, utility_name, quantity_unit FROM ub.dim_utility FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Timeout = #duration(0, 0, 30, 0)]),
+				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {{"utility_code", Int64.Type}, {"utility_name", type text}, {"quantity_unit", type text}}, "en-US")
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table

@@ -1,0 +1,15 @@
+expression ClickHouseUrl = "http://192.168.11.71:8123/" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=false]
+	lineageTag: 13a02a43-36d8-512e-9b29-a3fd62082540
+
+	annotation PBI_ResultType = Text
+
+expression ClickHouseUser = "default" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=false]
+	lineageTag: 74f1073d-0220-5055-8781-936f9e972c4f
+
+	annotation PBI_ResultType = Text
+
+expression ClickHousePassword = "" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=false]
+	lineageTag: e688c0b5-6364-5c70-a5fa-d136d43c377b
+
+	annotation PBI_ResultType = Text
+

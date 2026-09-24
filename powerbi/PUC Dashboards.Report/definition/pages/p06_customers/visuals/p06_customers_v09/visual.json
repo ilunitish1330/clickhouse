@@ -1,0 +1,96 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.0.0/schema.json",
+  "name": "p06_customers_v09",
+  "position": {
+    "x": 434.6666666666667,
+    "y": 188.0,
+    "z": 9000,
+    "width": 410.6666666666667,
+    "height": 254.0,
+    "tabOrder": 9000
+  },
+  "visual": {
+    "visualType": "clusteredColumnChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "CustomerPeriod"
+                    }
+                  },
+                  "Property": "pareto_band"
+                }
+              },
+              "queryRef": "CustomerPeriod.pareto_band",
+              "nativeQueryRef": "pareto_band"
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "CustomerPeriod"
+                    }
+                  },
+                  "Property": "Customer Revenue Share %"
+                }
+              },
+              "queryRef": "CustomerPeriod.Customer Revenue Share %",
+              "nativeQueryRef": "Customer Revenue Share %"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "CustomerPeriod"
+                  }
+                },
+                "Property": "pareto_band"
+              }
+            },
+            "direction": "Ascending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    },
+    "drillFilterOtherVisuals": true,
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Share of revenue by customer rank'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
