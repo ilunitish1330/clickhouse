@@ -79,6 +79,29 @@ in its own currency.
    `item_key`, `project_key`, `purch_key`, each `data_area|id`), because Power BI can't relate
    on two columns. Relate `agg_*.month` or any fact date to `dim_date.date_key`.
 
+### Utility billing statistics (the "Statistic Report" export)
+
+A separate database, `ub`, holds the utility billing report: electricity, water and wastewater
+for Mahe, Praslin and La Digue. Until the SQL Server table behind the report is known, it
+loads from the exported file:
+
+```bash
+python3 find_source.py                                   # search every database this login can see for the source
+python3 ub_load.py "Statistic Report24092026.csv"        # or the .zip; re-loading a file replaces it
+python3 ub_load.py --aggregates                          # rebuild dims + aggregates only
+```
+
+Star schema: `fact_billing` (one row per billing line: amount, quantity) with `dim_customer`,
+`dim_connection`, `dim_tariff` (tariff → category → sector), `dim_utility`, `dim_region`,
+`dim_charge_type` and `dim_date`. Aggregates: `agg_billing_monthly` (the main Power BI table),
+`agg_customer_monthly`, `agg_connection_monthly` and `agg_water_network_monthly`.
+`SELECT * FROM ub.v_batches` shows what's loaded.
+
+- Quantity is kWh for electricity and m³ for water. Never sum it across `utility_code`.
+  `consumption_qty` counts consumption lines only.
+- A file that has been through Excel has lost its dates, so each batch's billing month is
+  recovered from CURDATETICKS. Ask for exports straight from SQL Server with yyyy-mm-dd dates.
+
 ### Adding a table
 
 Add a `CREATE TABLE` to `ch_schema.sql` and a `TABLES["name"] = ("AXTABLE", "SELECT ... AS col")`
