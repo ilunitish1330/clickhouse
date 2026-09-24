@@ -60,6 +60,14 @@ Things to know when building reports:
   status names are the standard AX 2012 enum values, so check a few before relying on them.
   Unknown codes show up as `code_N`.
 
+### Charts in the ClickHouse web UI
+
+`python3 ax_dashboard.py` prints a `http://localhost:8123/dashboard#...` URL. Open it to
+see 10 monthly charts: sales, customer invoices, receivables, purchases, payables,
+purchase orders, inventory and projects. Change `company`, `from` and `to` in the fields at
+the top of the page. Charts show one company at a time, because each company's amounts are
+in its own currency.
+
 ### Power BI
 
 1. Install the [ClickHouse ODBC driver](https://github.com/ClickHouse/clickhouse-odbc/releases)
