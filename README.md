@@ -1,3 +1,56 @@
+# Any raw data → ClickHouse, aggregated automatically (`auto_load.py`)
+
+Give it a SQL query or an Excel/CSV file and nothing else. It lands the raw rows in ClickHouse,
+works out from the data itself what the facts, dimensions and aggregates should be, and builds
+them.
+
+```bash
+python3 auto_load.py billing --sql-file query.sql          # a query run on SQL Server (login from .env)
+python3 auto_load.py billing --sql "SELECT ..." --db PUC   # inline query, another database
+python3 auto_load.py billing --file "Statistic Report.zip" # .csv .tsv .txt .xlsx, or a .zip of them
+python3 auto_load.py --inbox ~/inbox                       # every file dropped into a folder
+```
+
+Each dataset gets its own ClickHouse database (`billing` above), with these tables:
+- `raw`: every row exactly as received
+- `fact`: typed and cleaned
+- `dim_*`: the dimensions it found
+- `agg_monthly` or `agg_daily`, plus `agg_<entity>_monthly` for customers, meters and the like
+
+**How it decides**, from the values rather than from anyone's description:
+- Numbers named or behaving like amounts become measures. Prices and rates are averaged, not summed.
+- Whole-number codes and short text with few values become dimension attributes.
+- Code/description pairs and hierarchies (tariff → category → sector) are found by checking which
+  column decides which.
+- Many-valued IDs become entities (customer, meter) or document numbers (invoice).
+- Dates are found in text, Excel serial numbers or .NET ticks. Rows without a date take the
+  month of their batch, when a column predicts it.
+- Empty and constant columns are dropped. Columns that Excel damaged are reported.
+- Quantities in different units are detected from the price per unit (kWh vs m³), and the
+  unit column is kept in every aggregate so they're never added together.
+- Aggregate grains are chosen by how many rows each dimension still collapses.
+
+**The first load decides; later loads reuse the model** (`models/<name>.json`), so reports don't
+shift when next month's file arrives. `models/<name>.md` explains every decision and lists what
+can't be known from data alone, like unlabelled codes, credits and duplicate rows, under **Check**.
+To overrule a decision, edit the JSON and run `python3 auto_load.py <name> --rebuild`. To start
+over, run `--remodel`.
+
+**Re-loading:** a file replaces an earlier file with the same name, and a new name adds to the
+dataset. A query run replaces everything, like a nightly full refresh.
+
+**The inbox:** files in `~/inbox/<name>/` load into dataset `<name>`, and loose files are named
+after the file (digits dropped). Loaded files move to `~/inbox/done/`, failures to
+`~/inbox/failed/` with an `.error.txt`. Check the inbox every 15 minutes with cron:
+
+```
+*/15 * * * * cd /path/to/repo && .venv/bin/python auto_load.py --inbox ~/inbox >> auto_load.log 2>&1
+```
+
+For `.xlsx` files, run `pip install openpyxl` first. `python3 test_auto_load.py` tests all of the above.
+
+---
+
 # Dynamics AX 2012 → ClickHouse → Power BI
 
 `ax_load.py` copies 17 AX tables from SQL Server into a star schema in the ClickHouse
