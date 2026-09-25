@@ -196,18 +196,15 @@ PAGES = {
             chart("table", "By island", "region_name", ["cn_connections", "cn_avg_use", "cn_zero", "cn_jumped",
                                                          "cn_dropped"], wide=True),
         ]},
-    # built per request from the columns reviewers added (custom_page below)
-    "custom": {
-        "title": "Custom Columns", "icon": "fx", "utility": None,
-        "subtitle": "The columns reviewers added, from the finalized data", "tiles": [], "charts": []},
 }
 
 
-def custom_page() -> dict:
-    """Tiles and charts for every column a reviewer added (ub_custom.py): a number column is summed,
-    by island, period and tariff group; a text or date column breaks revenue and rows down by value."""
+def added_parts() -> tuple[list, list]:
+    """Tiles and charts for the columns reviewers added (ub_custom.py), shown at the end of every
+    dashboard in their own colour. A number column: its total and by island; a text or date column:
+    revenue by value. The page's filters and the user's role apply as for everything else."""
     import ub_custom
-    page = {**PAGES["custom"], "tiles": [], "charts": []}
+    tiles, charts = [], []
     for c in ub_custom.columns():
         v = f"extra[{sql_str(c['key'])}]"
         name = c["name"]
@@ -215,18 +212,14 @@ def custom_page() -> dict:
         if c["kind"] == "number":
             m = f"cx_{c['key']}"
             METRICS[m] = (f"Total {name}", "b", f"sumIf(toFloat64OrZero({v}), {v} != '')", "num")
-            page["tiles"].append(tile(m, True))
-            page["charts"] += [chart("bar", f"{name} by island", "region_name", [m]),
-                               chart("col", f"{name} by period", "period_label", [m], sort="dim", all_periods=True),
-                               chart("bar", f"{name} by tariff group", "tariff_desc", [m], limit=12)]
+            tiles.append({**tile(m, True), "custom": True})
+            charts.append({**chart("bar", f"{name} by island", "region_name", [m]), "custom": True})
         else:
             m = f"cf_{c['key']}"
             METRICS[m] = (f"Rows with {name}", "b", f"countIf({v} != '')", "count")
-            page["tiles"].append(tile(m, True))
-            page["charts"] += [chart("bar", f"Revenue by {name}", v, ["revenue"], limit=15, share=["revenue"]),
-                               chart("table", f"{name}: rows, customers and revenue", v,
-                                     ["lines", "customers", "revenue"], share=["revenue"], limit=30)]
-    return page
+            tiles.append({**tile(m, True), "custom": True})
+            charts.append({**chart("bar", f"Revenue by {name}", v, ["revenue"], limit=12, share=["revenue"]), "custom": True})
+    return tiles, charts
 
 
 # =============================================================================
@@ -434,7 +427,9 @@ def num(v):
 
 
 def page_data(page_id: str, scope: dict, sel: dict) -> dict:
-    page = custom_page() if page_id == "custom" else PAGES[page_id]
+    page = PAGES[page_id]
+    added_tiles, added_charts = added_parts()
+    page = {**page, "tiles": page["tiles"] + added_tiles, "charts": page["charts"] + added_charts}
     pu = page["utility"]
     stats = Stats()
     version = data_version()
@@ -442,11 +437,6 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
     if not plist:
         return {"empty": True}
     ctx = {"periods": plist, "batches": period_batches(version)}
-    if not page["tiles"] and not page["charts"]:
-        return {"title": page["title"], "subtitle": page["subtitle"], "tiles": [], "charts": [],
-                "message": "No columns have been added yet. A reviewer can add one in Data Review, "
-                           "Formula builder, What to do: Add a column. It shows here once it is finalized.",
-                "built": stats.out(), "review": review_status(ctx, sel)}
     q = lambda sql: run(sql, version, stats)
     by_period = {p["period"]: p for p in plist}
     prev_period = None
@@ -470,6 +460,7 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
         for i, t in enumerate(mine):
             label, _, _, fmt = METRICS[t["metric"]]
             tiles.append({"metric": t["metric"], "label": label, "fmt": fmt, "unit": cur["unit_label"],
+                          "custom": bool(t.get("custom")),
                           "value": num(cur[f"m{i}"]),
                           "previous": num(prev.get(f"m{i}")) if t["delta"] else None,
                           "previous_label": by_period[prev_period]["period_label"] if prev_period and t["delta"] else None})
@@ -530,7 +521,7 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
             "metrics": [{"key": m, "label": METRICS[m][0], "fmt": METRICS[m][3]} for m in c["metrics"]],
             "share": c["share"], "unit": unit, "rows": out_rows,
             "note": c["note"] if needs_unit and not unit else None,
-            "all_periods": c["all_periods"], "filter_key": fkey[0] if fkey else None,
+            "all_periods": c["all_periods"], "filter_key": fkey[0] if fkey else None, "custom": bool(c.get("custom")),
         })
     return {"title": page["title"], "subtitle": page["subtitle"], "tiles": tiles, "charts": charts,
             "built": stats.out(), "review": review_status(ctx, sel)}

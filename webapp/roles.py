@@ -14,7 +14,7 @@ dashboards.PAGES plus "load" (Data Load), "review" (Data Review) and "users"
 from dataclasses import dataclass, field
 
 DASHBOARDS = ["executive", "electricity", "water", "sewerage", "tariff", "customers",
-              "controls", "solar", "network", "consumption", "custom"]
+              "controls", "solar", "network", "consumption"]
 ELECTRICITY, WASTEWATER, WATER = 1, 2, 3
 ISLANDS = {0: "All islands", 1: "Mahe", 2: "Praslin", 3: "La Digue"}
 
@@ -38,20 +38,20 @@ ROLES = {
     "executive": Role("Executive Management", "CEO and board: every dashboard, every utility, no account numbers.",
                       DASHBOARDS),
     "finance": Role("Finance & Revenue Manager", "Revenue, tariffs, customers and billing controls for all utilities.",
-                    ["executive", "electricity", "water", "sewerage", "tariff", "customers", "controls", "custom"],
+                    ["executive", "electricity", "water", "sewerage", "tariff", "customers", "controls"],
                     see_accounts=True),
     "electricity_manager": Role("Electricity Division Manager", "Electricity and solar PV data only.",
-                                ["executive", "electricity", "solar", "tariff", "customers", "consumption", "custom"],
+                                ["executive", "electricity", "solar", "tariff", "customers", "consumption"],
                                 utilities=(ELECTRICITY,)),
     "water_manager": Role("Water & Sewerage Division Manager", "Water, sewerage and the water network only.",
-                          ["executive", "water", "sewerage", "network", "tariff", "customers", "consumption", "custom"],
+                          ["executive", "water", "sewerage", "network", "tariff", "customers", "consumption"],
                           utilities=(WATER, WASTEWATER)),
     "regional_manager": Role("Regional Manager", "Every dashboard, limited to the manager's own island.",
                              DASHBOARDS),
     "billing_officer": Role("Billing Officer", "Billing controls, adjustments and customer billing.",
-                            ["controls", "customers", "consumption", "custom"], see_accounts=True),
+                            ["controls", "customers", "consumption"], see_accounts=True),
     "customer_service": Role("Customer Service Officer", "Customer and connection views for service queries.",
-                             ["customers", "consumption", "custom"], see_accounts=True),
+                             ["customers", "consumption"], see_accounts=True),
     "auditor": Role("Internal Auditor", "Read-only access to every dashboard and the load history.",
                     DASHBOARDS + ["load_history"], see_accounts=True),
     "reviewer": Role("Data Reviewer", "Reviews uploads: checks the dashboards and data, edits rows, finalizes "

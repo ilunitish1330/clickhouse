@@ -43,7 +43,7 @@ def main() -> None:
 
     ceo = login("ceo")
     me = ceo.get("/api/me").json()
-    assert me["must_change"] and len(me["pages"]) == 11 and not me["can_load"]
+    assert me["must_change"] and len(me["pages"]) == 10 and not me["can_load"]
     total = revenue(ceo)
     islands = {r["label"] for r in ceo.get("/api/page/executive", params={"period": "2026-01-01"}).json()["charts"][1]["rows"]}
     assert islands == {"Mahe Island", "Praslin Island", "La Digue Island"}

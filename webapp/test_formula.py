@@ -620,9 +620,16 @@ def added_columns():
     check(area, "ClickHouse: typed columns (number, text, date)", types.get("TEST Discount") == "Nullable(Float64)"
           and types.get("TEST Band") == "String" and types.get("TEST Empty") == "Nullable(Date)", types)
     scope = {"utilities": [1, 2, 3], "region": None, "see_accounts": True}
-    d = dashboards.page_data("custom", scope, {"period": PERIOD})
+    d = dashboards.page_data("executive", scope, {"period": PERIOD})
     tile = next((x for x in d["tiles"] if x["label"] == "Total TEST Discount"), None)
     check(area, "dashboard: the Total tile equals the column's sum", tile and abs(tile["value"] - py_sum) < 0.01, tile)
+    check(area, "dashboard: added columns sit on the existing dashboards, marked as added",
+          tile and tile["custom"] and not any(x["custom"] for x in d["tiles"] if not x["metric"].startswith(("cx_", "cf_")))
+          and all(c["custom"] for c in d["charts"] if c["title"] in ("TEST Discount by island", "Revenue by TEST Band")))
+    wd = dashboards.page_data("water", scope, {"period": PERIOD})
+    wt = next((x for x in wd["tiles"] if x["label"] == "Total TEST Discount"), None)
+    wsum = sum(num((r["extra"] or {}).get(key, "")) for r in rows if num(r["UTILITYTYPE"]) == 3)
+    check(area, "dashboard: on the Water page the total covers water rows only", wt and abs((wt["value"] or 0) - wsum) < 0.01, (wt, wsum))
     bands = next((c for c in d["charts"] if c["title"] == "Revenue by TEST Band"), None)
     want_b = {}
     for r in rows:
@@ -631,7 +638,7 @@ def added_columns():
     got_b = {x["label"]: x["values"][0] for x in (bands or {}).get("rows", [])}
     check(area, "dashboard: revenue by the text column's values", bands and all(abs(got_b.get(k, 0) - v) < 0.01 for k, v in want_b.items()),
           (got_b, want_b))
-    d2 = dashboards.page_data("custom", {**scope, "region": 3}, {"period": PERIOD})
+    d2 = dashboards.page_data("executive", {**scope, "region": 3}, {"period": PERIOD})
     tile2 = next((x for x in d2["tiles"] if x["label"] == "Total TEST Discount"), None)
     check(area, "dashboard: the role's island limit applies (La Digue has no discount)", tile2 and (tile2["value"] or 0) == 0, tile2)
     hist = [h for h in R.history(BATCH, 20) if h["action"] == "formula" and "added the" in h["new_value"]]

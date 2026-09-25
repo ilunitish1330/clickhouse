@@ -301,10 +301,6 @@
       try { d = await api(`/api/page/${pageId}?${qs}`); }
       catch (err) { dash.innerHTML = `<div class="note">${icon("x")} ${esc(err.message)}</div>`; dash.classList.remove("loading"); return; }
       if (d.empty) return noData(dash);
-      if (d.message && !d.tiles.length && !d.charts.length) {  // e.g. no columns added yet
-        dash.innerHTML = `<div class="empty-state"><div class="big">${icon(page.icon)}</div><h2>Nothing to show yet</h2><p>${esc(d.message)}</p></div>`;
-        dash.classList.remove("loading"); return;
-      }
       main.querySelector("#subtitle").textContent = `${d.subtitle} · ${periodLabel()}`;
       // review status of the data on screen: Final once reviewed, Draft until then
       const chip = main.querySelector("#built"), rv = d.review || [];
@@ -318,16 +314,28 @@
         chip.title = rv.map((r) => `${r.periods.join(", ")}: ${r.status === "final" ? "Final" : "Draft"}, revision ${r.revision}${r.by ? `, last change by ${r.by} on ${r.at.slice(0, 16)}` : ""}`).join("\n")
           + (d.built ? `\n${d.built.queries} queries, ${d.built.rows_read.toLocaleString()} rows read, ${d.built.ms} ms` : "");
       }
-      const slots = d.tiles.length + (d.tiles[0] && d.tiles[0].value !== null ? 1 : 0);  // the headline tile is two wide
+      // the page's own tiles and charts, then the columns reviewers added, in their own colour
+      const own = d.tiles.filter((t) => !t.custom), extra = d.tiles.filter((t) => t.custom);
+      const slots = own.length + (own[0] && own[0].value !== null ? 1 : 0);  // the headline tile is two wide
       const cols = slots > 6 ? Math.ceil(slots / 2) : slots;  // too many for one row: two rows
       const fill = slots > 6 ? cols * 2 - slots : 0;  // the last tile stretches over any gap
-      dash.innerHTML = `<div class="tiles${fill ? " fill" : ""}" style="--cols:${cols};--fill:${fill + 1}">${d.tiles.map((t, i) => tileHtml(t, i)).join("")}</div>
-        <div class="grid">${d.charts.map((c, i) => `
+      const card = (c, i) => `
           <section class="card ${c.wide || c.kind === "table" && c.metrics.length > 3 ? "wide" : ""}">
             <div class="card-head"><div><h3>${esc(c.title)}${c.filter_key ? `<span class="pk-dot" title="Click a bar to filter the page"></span>` : ""}</h3><div class="meta">${c.all_periods ? (s.pfrom ? esc(periodLabel()) : "All periods") : esc(periodLabel())}${c.unit && c.metrics.some((m) => m.fmt === "qty") ? " · " + esc(c.unit) : ""}${c.metrics.some((m) => m.fmt === "money") ? " · " + CURRENCY : ""}</div></div>
             ${c.kind !== "table" && !c.note ? `<button class="btn small ghost" data-toggle="${i}" aria-label="Switch between chart and table">${icon(state.tableView[pageId + i] ? "chart" : "table")}${state.tableView[pageId + i] ? "Chart" : "Table"}</button>` : ""}</div>
             ${insight(c) ? `<div class="insight">${icon("spark")}<span>${insight(c)}</span></div>` : ""}
-            <div class="card-body" id="c${i}"></div></section>`).join("")}</div>`;
+            <div class="card-body" id="c${i}"></div></section>`;
+      const charts = d.charts.map((c, i) => [c, i]);
+      const addedCharts = charts.filter(([c]) => c.custom);
+      dash.innerHTML = `<div class="tiles${fill ? " fill" : ""}" style="--cols:${cols};--fill:${fill + 1}">${own.map((t, i) => tileHtml(t, i)).join("")}</div>
+        <div class="grid">${charts.filter(([c]) => !c.custom).map(([c, i]) => card(c, i)).join("")}</div>
+        ${extra.length || addedCharts.length ? `
+        <section class="added-section">
+          <div class="added-head"><span class="added-ic">${icon("fx")}</span><div><h2>Added columns</h2>
+            <p>Columns reviewers added in the formula builder, for the same filters as the rest of this page.</p></div></div>
+          <div class="tiles added" style="--cols:${Math.min(Math.max(extra.length, 1), 4)}">${extra.map((t) => tileHtml(t, 1)).join("")}</div>
+          <div class="grid">${addedCharts.map(([c, i]) => card(c, i)).join("")}</div>
+        </section>` : ""}`;
       d.charts.forEach((c, i) => {
         const el = dash.querySelector(`#c${i}`);
         if (c.note) el.innerHTML = `<div class="note">${icon("drop")} ${esc(c.note)}</div>`;
@@ -678,7 +686,7 @@
       const widths = Object.fromEntries(cols.map((c) => [c, Math.min(40, Math.max(4, L(c).length, ...d.rows.map((r) => (r.values[c] || "").length)) + 1)]));
       const from = d.total ? (d.page - 1) * d.size + 1 : 0, to = Math.min(d.total, d.page * d.size);
       box.innerHTML = `
-        <div class="tbl-wrap rv-grid"><table class="data rvtable"><thead><tr><th class="n">Line</th>${cols.map((c) => `<th class="${rv.cols.number.includes(c) ? "n" : ""}">${esc(L(c))}</th>`).join("")}<th></th></tr></thead><tbody>
+        <div class="tbl-wrap rv-grid"><table class="data rvtable"><thead><tr><th class="n">Line</th>${cols.map((c) => `<th class="${rv.cols.number.includes(c) ? "n" : ""} ${c.startsWith("x:") ? "added" : ""}">${c.startsWith("x:") ? icon("fx") : ""}${esc(L(c))}</th>`).join("")}<th></th></tr></thead><tbody>
         ${d.rows.map((r) => {
           const del = r.pending === "delete";
           return `<tr class="${r.pending ? "p-" + r.pending : ""}" data-line="${r.line_no}">
@@ -686,7 +694,7 @@
             ${cols.map((c) => {
               const was = r.changed[c];
               // each cell as wide as its column's longest value on this page
-              return `<td class="${was !== undefined ? "chg" : ""}"><input class="cell ${rv.cols.number.includes(c) ? "n" : ""}" data-col="${c}" value="${esc(r.values[c])}" size="${widths[c]}" ${del || busy ? "disabled" : ""}
+              return `<td class="${was !== undefined ? "chg" : ""} ${c.startsWith("x:") ? "added" : ""}"><input class="cell ${rv.cols.number.includes(c) ? "n" : ""}" data-col="${c}" value="${esc(r.values[c])}" size="${widths[c]}" ${del || busy ? "disabled" : ""}
                 aria-label="${esc(L(c))}, line ${r.line_no}" ${was !== undefined ? `title="Was: ${esc(was || "(empty)")}"` : ""}></td>`;
             }).join("")}
             <td class="n">${r.pending ? `<button class="btn small ghost" data-undo="${r.line_no}" title="Undo the pending change to this row" ${busy ? "disabled" : ""}>${icon("undo")}</button>`
@@ -1033,7 +1041,7 @@
           ${d.invalid.length ? `<div class="error">${icon("x")} Cannot apply: ${d.invalid.map((x) => `${esc(x.label)} would be invalid on ${x.rows.toLocaleString()} row(s)`).join("; ")}. Utility and Island must be 1–3, numbers must be numbers, dates yyyy-mm-dd.</div>` : ""}
           ${d.too_many ? `<div class="error">At most 100,000 rows can be copied at once.</div>` : ""}
           ${d.empties_month ? `<div class="error">This would delete every row of the month. To replace a month, upload its file again.</div>` : ""}
-          ${d.sample.length ? `<div class="tbl-wrap"><table class="data fb-sample"><thead><tr><th class="n">Line</th>${shown.map((c) => `<th class="${isNum(c) ? "n" : ""} ${tg.has(c) ? "tgt" : ""}">${esc(lab(c))}</th>`).join("")}</tr></thead><tbody>
+          ${d.sample.length ? `<div class="tbl-wrap"><table class="data fb-sample"><thead><tr><th class="n">Line</th>${shown.map((c) => `<th class="${isNum(c) ? "n" : ""} ${tg.has(c) ? "tgt" : ""} ${c.startsWith("x:") ? "added" : ""}">${esc(lab(c))}</th>`).join("")}</tr></thead><tbody>
             ${d.sample.map((row) => `<tr class="${d.action === "delete" ? "p-delete" : ""}"><td class="n num">${d.action === "copy" ? `<span class="tag new">Copy of</span>` : ""}${row.line_no}</td>${shown.map((c) => {
               const was = row.before[c], now = row.after[c], diff = d.action !== "delete" && was !== now;
               return `<td class="${isNum(c) ? "n" : ""} ${diff ? "diff" : ""}">${diff ? `${was === "" ? "" : `<s>${esc(was)}</s> `}<b>${esc(now)}</b>` : esc(was)}</td>`;

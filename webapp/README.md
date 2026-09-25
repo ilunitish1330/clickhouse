@@ -97,9 +97,10 @@ ClickHouse and the dashboards when you finalize:
 
 - **ClickHouse**: `SELECT * FROM ub.v_custom` has every added column as a real, typed column
   (number, text, date) next to the billing line's keys, ready for queries or Power BI.
-- **Dashboards**: the **Custom Columns** dashboard shows each number column's total, by island,
-  period and tariff group, and each text or date column's revenue and rows by value, with the
-  usual filters and role limits.
+- **Dashboards**: every dashboard ends with an **Added columns** section, in the added columns'
+  own colour (purple): each number column's total and by island, each text or date column's
+  revenue by value, for the page's filters and the user's role (on the Water page, water rows
+  only). Added columns are purple in the review grid and the formula builder too.
 - An upload whose file has a column with the same name fills it.
 
 Applying adds the changes to the pending edits, like hand edits: check them on the Rows tab
