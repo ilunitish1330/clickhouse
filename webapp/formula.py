@@ -13,7 +13,9 @@ Formulas are Excel-like:
     "MAHE " & UPPER([Tariff group])
 
 Fields are written [Label] (as shown in the grid) or by their export name (AMOUNT).
-A formula reads the values the row has before the change.
+Columns a reviewer added (ub_custom.py) are written [Their name] too; inside, they are
+"x:<key>" and read from the row's `extra` map. A formula reads the values the row has
+before the change.
 """
 import re
 
@@ -38,11 +40,47 @@ def sql_text(v: str) -> str:
     return "'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
+CUSTOM: dict = {}  # "x:<key>" -> {"key", "name", "kind"}: the added columns, reloaded per request
+
+
+def load_custom(extra: dict | None = None) -> None:
+    """The added columns as they are now (plus, while previewing a new column, that one)."""
+    import ub_custom
+    CUSTOM.clear()
+    for c in ub_custom.columns():
+        CUSTOM[f"x:{c['key']}"] = c
+    if extra:
+        CUSTOM[f"x:{extra['key']}"] = extra
+
+
+def is_custom(col: str) -> bool:
+    return col.startswith("x:")
+
+
 def field(name: str, pos: int | None = None) -> str:
-    col = BY_NAME.get(name.strip().lower())
+    n = name.strip().lower()
+    col = BY_NAME.get(n) or next((k for k, c in CUSTOM.items() if c["name"].lower() == n or k == n), None)
     if not col:
         raise FormulaError(f"Unknown field [{name}]", pos)
     return col
+
+
+def ref(col: str) -> str:
+    """The SQL for a field's text: a column, or an added column's value in `extra`."""
+    return f"extra[{sql_text(CUSTOM[col]['key'])}]" if is_custom(col) else col
+
+
+def is_num(col: str) -> bool:
+    return CUSTOM[col]["kind"] == "number" if is_custom(col) else col in NUMERIC
+
+
+def label(col: str) -> str:
+    return CUSTOM[col]["name"] if is_custom(col) and col in CUSTOM else LABELS.get(col, col)
+
+
+def read(col: str):
+    """A field as a formula value: (sql, type)."""
+    return (f"toFloat64OrZero({ref(col)})", "num") if is_num(col) else (ref(col), "txt")
 
 
 # ------------------------------------------------------------------ tokens
@@ -114,6 +152,14 @@ def xround(x: str, n: int) -> str:
     """Round like Excel: halves away from zero (2.5 -> 3, 2.675 -> 2.68). A float's shortest text
     ('2.675') read as a Decimal rounds exactly; Float64 round() would give 2 and 2.67."""
     return f"ifNull(toFloat64(round(toDecimal128OrNull(toString({x}), 12), {n})), round({x}, {n}))"
+
+
+def xround_text(x: str, n: int) -> str:
+    """ROUND like Excel, written as text straight from the exact decimal: through a Float64 on the
+    way back, 9876543.21 comes out as '9876543.209999999'. Trailing zeros go ('26.20' -> '26.2')."""
+    d = f"toString(round(toDecimal128OrNull(toString({x}), 12), {n}))"
+    trimmed = f"replaceRegexpOne(replaceRegexpOne({d}, '0+$', ''), '\\\\.$', '')"
+    return f"ifNull(if(position({d}, '.') > 0, {trimmed}, {d}), toString(round({x}, {n})))"
 
 
 def _same(a, b):  # IF / MIN / MAX: both numbers, else both text
@@ -261,7 +307,7 @@ class Parser:
         if k == "field":
             col = field(v[1:-1], pos)
             self.fields.add(col)
-            return (f"toFloat64OrZero({col})", "num") if col in NUMERIC else (col, "txt")
+            return read(col)
         if k == "name":
             up = v.upper()
             if up in ("TRUE", "FALSE"):
@@ -279,8 +325,10 @@ class Parser:
                 self.expect(")")
                 return call(up, args, pos)
             col = field(v, pos)  # a bare export column name: AMOUNT
+            if is_custom(col):
+                raise FormulaError(f"Write added columns in brackets: [{label(col)}]", pos)
             self.fields.add(col)
-            return (f"toFloat64OrZero({col})", "num") if col in NUMERIC else (col, "txt")
+            return read(col)
         if v == "(":
             e = self.compare()
             self.expect(")")
@@ -302,8 +350,14 @@ def value_sql(target: str, src: str) -> str:
     sql, t, _ = compile_formula(src)
     if t == "bool":
         raise FormulaError("This formula gives TRUE/FALSE; a field needs a value", 0)
+    if is_custom(target) and CUSTOM[target]["kind"] == "number":  # blank stays blank
+        if t == "txt":
+            return f"if(trimBoth({sql}) = '', '', {xround_text(f'toFloat64OrZero(trimBoth({sql}))', 4)})"
+        return xround_text(sql, 4)
+    if is_custom(target):
+        return as_txt((sql, t))
     if target in ("AMOUNT", "QUANTITY"):
-        return f"toString({xround(as_num((sql, t)), 4)})"
+        return xround_text(as_num((sql, t)), 4)
     if target in WHOLE or target in CODES or target == "CURDATETICKS":
         return f"toString(toInt64(round({as_num((sql, t))})))"
     return as_txt((sql, t))
@@ -314,6 +368,17 @@ def invalid_sql(target: str, src: str) -> str:
     sql, t, _ = compile_formula(src)
     # text going into a number field must read as a number, not quietly become 0
     not_num = f"isNull(toFloat64OrNull(trimBoth({sql}))) OR " if t == "txt" else ""
+    if is_custom(target):
+        kind = CUSTOM[target]["kind"]
+        if kind == "number":
+            if t == "txt":
+                return (f"trimBoth({sql}) != '' AND (isNull(toFloat64OrNull(trimBoth({sql}))) OR "
+                        f"abs(toFloat64OrZero(trimBoth({sql}))) >= 1e14)")
+            return f"not (isFinite({as_num((sql, t))}) AND abs({as_num((sql, t))}) < 1e14)"
+        if kind == "date":
+            target = "INVOICEDATE"  # the same date rule
+        else:
+            return f"lengthUTF8({as_txt((sql, t))}) > 500"
     if target in ("AMOUNT", "QUANTITY"):  # stored as Decimal(18, 4): anything bigger would become 0
         return f"{not_num}not (isFinite({as_num((sql, t))}) AND abs({as_num((sql, t))}) < 1e14)"
     if target == "CURDATETICKS":
@@ -337,40 +402,40 @@ NUM_RE = re.compile(r"-?\d+(\.\d+)?")
 
 
 def _cmp(col: str, op: str, value) -> str:
-    num = col in NUMERIC
+    num, lab, c = is_num(col), label(col), ref(col)
     if op in ("empty", "not_empty"):
-        return f"{'' if op == 'empty' else 'NOT '}empty(trimBoth({col}))"
+        return f"{'' if op == 'empty' else 'NOT '}empty(trimBoth({c}))"
     if op == "between":
         if not isinstance(value, (list, tuple)) or len(value) != 2:
-            raise FormulaError(f"{LABELS.get(col, col)} between needs two values")
+            raise FormulaError(f"{lab} between needs two values")
         a, b = (str(x).strip() for x in value)
         if num:
             if not (NUM_RE.fullmatch(a) and NUM_RE.fullmatch(b)):
-                raise FormulaError(f"{LABELS.get(col, col)} between needs two numbers")
-            return f"toFloat64OrZero({col}) BETWEEN {a} AND {b}"
-        return f"{col} BETWEEN {sql_text(a)} AND {sql_text(b)}"
+                raise FormulaError(f"{lab} between needs two numbers")
+            return f"toFloat64OrZero({c}) BETWEEN {a} AND {b}"
+        return f"{c} BETWEEN {sql_text(a)} AND {sql_text(b)}"
     if op == "in":
         items = [x.strip() for x in (value if isinstance(value, list) else str(value).split(",")) if str(x).strip()]
         if not items or len(items) > 200:
-            raise FormulaError(f"{LABELS.get(col, col)} is one of: give 1 to 200 values, separated by commas")
-        return f"trimBoth({col}) IN ({', '.join(sql_text(x) for x in items)})"
+            raise FormulaError(f"{lab} is one of: give 1 to 200 values, separated by commas")
+        return f"trimBoth({c}) IN ({', '.join(sql_text(x) for x in items)})"
     v = str(value if value is not None else "").strip()
     if len(v) > 200:
         raise FormulaError("A value can be at most 200 characters")
     if op in ("contains", "not_contains"):
-        return f"{'NOT ' if op == 'not_contains' else ''}positionCaseInsensitiveUTF8({col}, {sql_text(v)}) > 0"
+        return f"{'NOT ' if op == 'not_contains' else ''}positionCaseInsensitiveUTF8({c}, {sql_text(v)}) > 0"
     if op == "starts":
-        return f"startsWith(lowerUTF8({col}), lowerUTF8({sql_text(v)}))"
+        return f"startsWith(lowerUTF8({c}), lowerUTF8({sql_text(v)}))"
     if op == "ends":
-        return f"endsWith(lowerUTF8({col}), lowerUTF8({sql_text(v)}))"
+        return f"endsWith(lowerUTF8({c}), lowerUTF8({sql_text(v)}))"
     sym = {"eq": "=", "ne": "!=", "gt": ">", "ge": ">=", "lt": "<", "le": "<="}.get(op)
     if not sym:
         raise FormulaError(f"Unknown comparison {op}")
     if num and NUM_RE.fullmatch(v):
-        return f"toFloat64OrZero({col}) {sym} {v}"
+        return f"toFloat64OrZero({c}) {sym} {v}"
     if num and op not in ("eq", "ne"):
-        raise FormulaError(f"{LABELS.get(col, col)} {OPS[op]} needs a number")
-    return f"trimBoth({col}) {sym} {sql_text(v)}"
+        raise FormulaError(f"{lab} {OPS[op]} needs a number")
+    return f"trimBoth({c}) {sym} {sql_text(v)}"
 
 
 def compile_rule(rule: dict | None) -> str:
@@ -414,6 +479,6 @@ def describe_rule(rule: dict | None) -> str:
             return str(node["formula"])
         v = node.get("value")
         v = " and ".join(map(str, v)) if isinstance(v, list) else v
-        label = LABELS.get(field(str(node.get("field", ""))), node.get("field"))
-        return f"{label} {OPS.get(node.get('op'), node.get('op'))}" + ("" if node.get("op") in ("empty", "not_empty") else f" {v}")
+        lab = label(field(str(node.get("field", ""))))
+        return f"{lab} {OPS.get(node.get('op'), node.get('op'))}" + ("" if node.get("op") in ("empty", "not_empty") else f" {v}")
     return walk(rule or {"rules": []}) or "all rows"

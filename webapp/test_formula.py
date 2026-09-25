@@ -93,6 +93,9 @@ def drop_batch() -> None:
     for t in ("raw_batches", "batch_events", "raw_pending", "edit_log", "build_log", "load_log"):
         ch(f"DELETE FROM ub.{t} WHERE batch_id = {b}")
     ch("DELETE FROM ub.saved_formulas WHERE startsWith(name, 'TEST ')")
+    ch("DELETE FROM ub.custom_columns WHERE startsWith(name, 'TEST ')")  # only the columns tests added
+    import ub_custom
+    ub_custom.refresh_view()
     ax_load.run_sql_file(HERE.parent / "ub_aggregates.sql")
 
 
@@ -542,6 +545,134 @@ def api():
 
 # ---------------------------------------------------------------------------- 8. speed on a full month
 
+def added_columns():
+    area = "9 Added columns"
+    import dashboards
+    import ub_custom
+    discard()
+    b = F.sql_text(BATCH)
+    rows = rows_now()
+    praslin = {"combine": "and", "rules": [{"field": "REGION", "op": "eq", "value": "2"}]}
+    add = {"action": "add_column", "column": {"name": "TEST Discount", "kind": "number"}, "rule": praslin,
+           "formula": "ROUND([Amount] * 0.1, 2)"}
+    want = {int(r["line_no"]): round_str(num(r["AMOUNT"]) * 0.1) for r in rows if num(r["REGION"]) == 2}
+    p = bulk.preview(BATCH, add)
+    check(area, "preview: the formula fills exactly the rows the rule picks", p["affected"] == len(want), (p["affected"], len(want)))
+    check(area, "preview: amounts do not change", p["batch_amount_after"] == p["batch_amount"])
+    out = bulk.apply(BATCH, add, USER)
+    ident = f"x:{out['column']['key']}"
+    check(area, "the column exists at once, for every month", any(c["name"] == "TEST Discount" for c in ub_custom.columns()))
+    got = {int(r["line_no"]): (r["extra"] or {}).get(out["column"]["key"], "") for r in rows_now()}
+    wrong = [(n, got.get(n), v) for n, v in want.items() if got.get(n) != v]
+    blank = sum(1 for n, v in got.items() if n not in want and v != "")
+    check(area, f"every one of the {len(want)} values is ROUND(amount * 0.1, 2)", not wrong, wrong[:3])
+    check(area, "rows outside the rule stay blank", blank == 0, blank)
+    check(area, "the values wait as pending edits", pending() == len(want), pending())
+    fact_before = R.q(f"SELECT countIf(notEmpty(extra)) AS n FROM ub.fact_lines WHERE batch_id = {b}")[0]["n"]
+    check(area, "not on the dashboards before Finalize", int(fact_before) == 0, fact_before)
+    # used like any field
+    big = sum(1 for v in want.values() if num(v) > 50)
+    pr = bulk.preview(BATCH, {"rule": {"rules": [{"field": ident, "op": "gt", "value": "50"}]}, "action": "delete"})
+    check(area, "a rule on the added column", pr["matched"] == big, (pr["matched"], big))
+    pr = bulk.preview(BATCH, {"rule": {"rules": [{"field": ident, "op": "empty"}]}, "action": "delete"})
+    check(area, "'is empty' finds the rows without a value", pr["matched"] == len(rows) - len(want), pr["matched"])
+    F.load_custom()
+    sql, _, _ = F.compile_formula("[Amount] - [TEST Discount]")
+    vals = R.q(f"SELECT m.line_no AS n, {sql} AS v FROM {R._merged(BATCH)} AS m WHERE m.pending != 'delete' ORDER BY n")
+    bad = [v for v in vals if abs(float(v["v"]) - (num(next(r for r in rows if int(r['line_no']) == int(v['n']))["AMOUNT"])
+                                                   - num(want.get(int(v["n"]), "")))) > 1e-6]
+    check(area, "a formula can use the added column (blank reads as 0)", not bad, bad[:2])
+    # set it with a formula, hand edits, validation
+    bulk.apply(BATCH, {"rule": {"rules": [{"field": ident, "op": "empty"}]}, "action": "update",
+                       "sets": [{"field": ident, "formula": "0"}]}, USER)
+    check(area, "Change values can set an added column", bulk.preview(BATCH, {"rule": {"rules": [{"field": ident, "op": "empty"}]},
+                                                                          "action": "delete"})["matched"] == 0)
+    inv = bulk.preview(BATCH, {"rule": praslin, "action": "update", "sets": [{"field": ident, "formula": '"abc"'}]})
+    check(area, "text in a number column is blocked", bool(inv["invalid"]), inv["invalid"])
+    ok_blank = bulk.preview(BATCH, {"rule": praslin, "action": "update", "sets": [{"field": ident, "formula": '""'}]})
+    check(area, "a blank value is allowed in a number column", not ok_blank["invalid"], ok_blank["invalid"])
+    one = next(iter(want))
+    R.edit(BATCH, one, {ident: "12.5"}, USER)
+    check(area, "hand edit of an added column", (rows_by_line(one)["extra"] or {}).get(out["column"]["key"]) == "12.5")
+    expect_error(area, "hand edit checked against the type", lambda: R.edit(BATCH, one, {ident: "twelve"}, USER), "must be a number")
+    # names
+    for name, msg in [("Amount", "already a column"), ("TEST Discount", "already a column"), ("tariff group", "already a column"),
+                      ("1abc", "starts with a letter"), ("x" * 41, "starts with a letter"), ("a]b", "starts with a letter"),
+                      ("a'); DROP TABLE x; --", "starts with a letter")]:
+        expect_error(area, f"column name {name[:20]!r} refused", lambda n=name: bulk.check(
+            {"action": "add_column", "column": {"name": n, "kind": "text"}, "rule": praslin}), msg)
+    expect_error(area, "a type other than number/text/date is refused", lambda: bulk.check(
+        {"action": "add_column", "column": {"name": "TEST X", "kind": "blob"}}), "type")
+    # a text column filled for every row, using the first column
+    t = bulk.apply(BATCH, {"action": "add_column", "column": {"name": "TEST Band", "kind": "text"}, "rule": {"rules": []},
+                           "formula": 'IF([TEST Discount] > 50, "Big", IF([Amount] > 1000, "High", "Normal"))'}, USER)
+    check(area, "a text column filled on every row", t["affected"] == len(rows), t["affected"])
+    empty = bulk.apply(BATCH, {"action": "add_column", "column": {"name": "TEST Empty", "kind": "date"}, "rule": {"rules": []}}, USER)
+    check(area, "a column can start empty", empty["affected"] == 0 and any(c["name"] == "TEST Empty" for c in ub_custom.columns()))
+    # finalize: ClickHouse and the dashboards
+    ub_load.apply(BATCH, USER)
+    rows = rows_now()
+    key, tkey = out["column"]["key"], t["column"]["key"]
+    py_sum = sum(num((r["extra"] or {}).get(key, "")) for r in rows)
+    ch_sum = float(R.q(f"SELECT sum(`TEST Discount`) AS s FROM ub.v_custom WHERE batch_id = {b}")[0]["s"])
+    check(area, "ClickHouse: ub.v_custom has the column as a real number column, same total", abs(ch_sum - py_sum) < 0.01, (ch_sum, py_sum))
+    types = {r["name"]: r["type"] for r in R.q("SELECT name, type FROM system.columns WHERE database = 'ub' AND table = 'v_custom'")}
+    check(area, "ClickHouse: typed columns (number, text, date)", types.get("TEST Discount") == "Nullable(Float64)"
+          and types.get("TEST Band") == "String" and types.get("TEST Empty") == "Nullable(Date)", types)
+    scope = {"utilities": [1, 2, 3], "region": None, "see_accounts": True}
+    d = dashboards.page_data("custom", scope, {"period": PERIOD})
+    tile = next((x for x in d["tiles"] if x["label"] == "Total TEST Discount"), None)
+    check(area, "dashboard: the Total tile equals the column's sum", tile and abs(tile["value"] - py_sum) < 0.01, tile)
+    bands = next((c for c in d["charts"] if c["title"] == "Revenue by TEST Band"), None)
+    want_b = {}
+    for r in rows:
+        k = (r["extra"] or {}).get(tkey, "") or "(not set)"
+        want_b[k] = want_b.get(k, 0) + num(r["AMOUNT"])
+    got_b = {x["label"]: x["values"][0] for x in (bands or {}).get("rows", [])}
+    check(area, "dashboard: revenue by the text column's values", bands and all(abs(got_b.get(k, 0) - v) < 0.01 for k, v in want_b.items()),
+          (got_b, want_b))
+    d2 = dashboards.page_data("custom", {**scope, "region": 3}, {"period": PERIOD})
+    tile2 = next((x for x in d2["tiles"] if x["label"] == "Total TEST Discount"), None)
+    check(area, "dashboard: the role's island limit applies (La Digue has no discount)", tile2 and (tile2["value"] or 0) == 0, tile2)
+    hist = [h for h in R.history(BATCH, 20) if h["action"] == "formula" and "added the" in h["new_value"]]
+    check(area, "history: one line per added column", len(hist) == 3, [h["new_value"] for h in hist])
+    # uploads fill a column with the same name
+    cols = ub_load.COLS + ["TEST Band"]
+    sample = R.q(f"SELECT {', '.join(ub_load.COLS)} FROM ub.raw_rows WHERE batch_id = {b} LIMIT 3")
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter="\t", lineterminator="\n")
+    w.writerow(cols)
+    for i, r in enumerate(sample):
+        w.writerow([r[c] if c != "BatchId" else "TEST-FORMULA-UPLOAD" for c in ub_load.COLS] + [f"from file {i}"])
+    path = Path(tempfile.gettempdir()) / "formula-test-upload.tsv"
+    path.write_text(buf.getvalue(), encoding="utf-8")
+    try:
+        ub_load.load([str(path)])
+        got = R.q(f"SELECT `TEST Band` AS v FROM ub.v_custom WHERE batch_id = 'TEST-FORMULA-UPLOAD' ORDER BY line_no")
+        check(area, "an upload with a column of the same name fills it", [g["v"] for g in got] == [f"from file {i}" for i in range(3)], got)
+    finally:
+        path.unlink()
+        for t_ in ("raw_rows", "fact_lines"):
+            ch(f"ALTER TABLE ub.{t_} DROP PARTITION 'TEST-FORMULA-UPLOAD'")
+        for t_ in ("raw_batches", "batch_events", "raw_pending", "edit_log", "build_log", "load_log"):
+            ch(f"DELETE FROM ub.{t_} WHERE batch_id = 'TEST-FORMULA-UPLOAD'")
+    # remove
+    bulk.remove_column(f"x:{empty['column']['key']}", USER)
+    check(area, "a removed column leaves the pickers, grid and ClickHouse view",
+          not any(c["name"] == "TEST Empty" for c in ub_custom.columns())
+          and "TEST Empty" not in {r["name"] for r in R.q("SELECT name FROM system.columns WHERE database = 'ub' AND table = 'v_custom'")})
+    F.load_custom()
+    expect_error(area, "a removed column can no longer be used in a formula", lambda: F.compile_formula("[TEST Empty]"), "unknown field")
+    check(area, "a new column never reuses a removed column's key",
+          bulk.check({"action": "add_column", "column": {"name": "TEST Again", "kind": "text"}}) and
+          ub_custom.add("TEST Again", "text", USER, bulk.RESERVED)["key"] not in (key, tkey, empty["column"]["key"]))
+    discard()
+
+
+def rows_by_line(n):
+    return next(r for r in rows_now() if int(r["line_no"]) == int(n))
+
+
 def speed():
     area = "8 Speed (a real month)"
     b = R.q("SELECT batch_id, rows FROM ub.raw_batches WHERE batch_id != 'TEST-FORMULA-BUILDER' ORDER BY rows DESC LIMIT 1")[0]
@@ -568,7 +699,7 @@ def main():
         print(f"test month: {len(rows):,} rows", flush=True)
         for name, fn in (("formulas", lambda: formulas(rows)), ("mistakes", mistakes), ("hostile", hostile),
                          ("conditions", lambda: conditions(rows)), ("actions", actions), ("end to end", end_to_end),
-                         ("api", api), ("speed", speed)):
+                         ("api", api), ("added columns", added_columns), ("speed", speed)):
             print(f"-- {name}", flush=True)
             try:
                 fn()
@@ -578,7 +709,7 @@ def main():
     finally:
         drop_batch()
         left = ch(f"SELECT count() FROM ub.raw_rows WHERE batch_id = {F.sql_text(BATCH)} FORMAT TSV").strip()
-        check("9 Clean-up", "the test month is gone again", left == "0", left)
+        check("99 Clean-up", "the test month is gone again", left == "0", left)
     areas = {}
     for a, _, ok, _ in results:
         areas.setdefault(a, [0, 0])[0 if ok else 1] += 1

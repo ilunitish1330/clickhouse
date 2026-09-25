@@ -32,6 +32,7 @@ import zipfile
 from pathlib import Path
 
 import ax_load  # ch(), insert(), run_sql_file(), .env handling
+import ub_custom
 from ax_load import ch
 
 HERE = Path(__file__).resolve().parent
@@ -97,6 +98,11 @@ def stage(name: str, text: str) -> int:
         sys.exit(f"{name}: columns missing from the export: {', '.join(missing)}")
     idx = [pos.get(c.upper()) for c in COLS]
     fallback_batch = Path(name).stem
+    # columns a reviewer added, if the file has them (matched by name)
+    added = [(c["key"], pos[c["name"].upper()]) for c in ub_custom.columns() if c["name"].upper() in pos]
+    if added:
+        print(f"{name}: also reading added column(s): "
+              + ", ".join(c["name"] for c in ub_custom.columns() if c["name"].upper() in pos), flush=True)
 
     ch("TRUNCATE TABLE ub.raw_load")
     batch, n = [], 0
@@ -110,12 +116,13 @@ def stage(name: str, text: str) -> int:
             vals.append("" if v == "NULL" else v)
         if not vals[COLS.index("BatchId")]:
             vals[COLS.index("BatchId")] = fallback_batch
-        batch.append([n] + vals)
+        extra = {k: rec[i].strip() for k, i in added if i < len(rec) and rec[i].strip() not in ("", "NULL")}
+        batch.append([n] + vals + [extra])
         if len(batch) == CHUNK:
-            ax_load.insert("ub.raw_load", ["line_no"] + COLS, batch)
+            ax_load.insert("ub.raw_load", ["line_no"] + COLS + ["extra"], batch)
             batch = []
     if batch:
-        ax_load.insert("ub.raw_load", ["line_no"] + COLS, batch)
+        ax_load.insert("ub.raw_load", ["line_no"] + COLS + ["extra"], batch)
     return n
 
 
@@ -130,13 +137,16 @@ def ensure_schema() -> None:
     engine = ch("SELECT engine FROM system.tables WHERE database = 'ub' AND name = 'fact_billing' FORMAT TSV").strip()
     if engine and engine != "View":
         migrate()
-    # fact_lines holds v_lines' columns: if v_lines changed, rebuild it whole
+    ax_load.run_sql_file(HERE / "ub_views.sql")
+    # fact_lines holds v_lines' columns: if v_lines changed (a new version of the app), rebuild it whole
     cols = lambda t: ch(f"SELECT name, type FROM system.columns WHERE database = 'ub' AND table = '{t}' "
                         "ORDER BY position FORMAT TSV")
-    if ch("EXISTS TABLE ub.fact_lines FORMAT TSV").strip() == "1" and \
-            ch("EXISTS TABLE ub.v_lines FORMAT TSV").strip() == "1" and cols("fact_lines") != cols("v_lines"):
+    if cols("fact_lines") != cols("v_lines"):
+        print("the billing lines gained columns: rebuilding them ...", flush=True)
         ch("DROP TABLE ub.fact_lines")
-    ax_load.run_sql_file(HERE / "ub_views.sql")
+        ax_load.run_sql_file(HERE / "ub_views.sql")  # recreates fact_lines empty-structured and fills it
+        ch("TRUNCATE TABLE ub.fact_lines")
+    ub_custom.refresh_view()
     # batches with no status yet (an older install) start as uploaded: Draft, revision 1
     ch("INSERT INTO ub.batch_events (batch_id, status, revision, changed_by, note) "
        "SELECT DISTINCT batch_id, 'draft', 1, 'system', 'uploaded' FROM ub.raw_batches "
@@ -235,14 +245,14 @@ def apply(batch: str, user: str) -> None:
     print(f"finalizing {pending} edited row(s) of batch {batch} (revision {revision} -> {revision + 1}) ...", flush=True)
     t0 = time.time()
     # the batch's rows with the edits in, built beside raw_rows, then swapped in whole
-    ch("CREATE TABLE IF NOT EXISTS ub.raw_rows_next AS ub.raw_rows")
-    ch("TRUNCATE TABLE ub.raw_rows_next")
+    ch("DROP TABLE IF EXISTS ub.raw_rows_next")
+    ch("CREATE TABLE ub.raw_rows_next AS ub.raw_rows")  # same structure, or REPLACE PARTITION refuses
     fname = f"(SELECT any(file_name) FROM ub.raw_batches WHERE batch_id = {b})"
-    ch(f"INSERT INTO ub.raw_rows_next (batch_id, file_name, {RAW_COLS}) "
-       f"SELECT batch_id, file_name, {RAW_COLS} FROM ub.raw_rows WHERE batch_id = {b} "
+    ch(f"INSERT INTO ub.raw_rows_next (batch_id, file_name, {RAW_COLS}, extra) "
+       f"SELECT batch_id, file_name, {RAW_COLS}, extra FROM ub.raw_rows WHERE batch_id = {b} "
        f"AND line_no NOT IN (SELECT line_no FROM ub.raw_pending FINAL WHERE batch_id = {b}) "
        f"UNION ALL "
-       f"SELECT batch_id, {fname}, {RAW_COLS} FROM ub.raw_pending FINAL WHERE batch_id = {b} AND action != 'delete'")
+       f"SELECT batch_id, {fname}, {RAW_COLS}, extra FROM ub.raw_pending FINAL WHERE batch_id = {b} AND action != 'delete'")
     rows = int(ch(f"SELECT count() FROM ub.raw_rows_next FORMAT TSV"))
     if rows == 0:  # a month with no rows would drop out of review with no way back but a re-upload
         ch("TRUNCATE TABLE ub.raw_rows_next")
@@ -276,8 +286,8 @@ def load(paths: list[str]) -> None:
                 ch(f"ALTER TABLE ub.raw_rows DROP PARTITION {sql_list([b])}")
                 ch(f"DELETE FROM ub.raw_batches WHERE batch_id = {sql_list([b])}")
             fname = sql_list([name])
-            ch(f"INSERT INTO ub.raw_rows (batch_id, file_name, {RAW_COLS}) "
-               f"SELECT BatchId, {fname}, {RAW_COLS} FROM ub.raw_load")
+            ch(f"INSERT INTO ub.raw_rows (batch_id, file_name, {RAW_COLS}, extra) "
+               f"SELECT BatchId, {fname}, {RAW_COLS}, extra FROM ub.raw_load")
             ch(BATCH_MONTHS.format(batches=sql_list(batches)))
             ch("INSERT INTO ub.load_log (file_name, batch_id, rows, amount) "
                f"SELECT {fname}, batch_id, count(), sum(amount) FROM ub.v_lines "

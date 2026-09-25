@@ -58,7 +58,8 @@ SELECT
     if(charge_type = 2, amount, toDecimal64(0, 4))   AS adjustment_amount,
     if(charge_type = 2, quantity, toDecimal64(0, 4)) AS adjustment_qty,
     if(amount < 0, amount, toDecimal64(0, 4))        AS credit_amount,
-    toUInt8(r.MCSEXTERNALASSETID != '') AS has_meter
+    toUInt8(r.MCSEXTERNALASSETID != '') AS has_meter,
+    r.extra AS extra   -- values of columns a reviewer added (ub_custom.py), by key
 FROM ub.raw_rows AS r
 ANY LEFT JOIN ub.raw_batches AS b ON b.batch_id = r.batch_id;
 

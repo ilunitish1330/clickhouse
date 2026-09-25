@@ -178,7 +178,7 @@
     return chips.length ? `<div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join("")}</div>` : "";
   }
 
-  const TILE_ICON = { money: "coin", qty: "pulse", rate: "tag", pct: "percent", count: "users" };
+  const TILE_ICON = { money: "coin", qty: "pulse", rate: "tag", pct: "percent", count: "users", num: "fx" };
 
   function tileHtml(t, i) {
     const f = fmt(t.value, t.fmt, t.unit);
@@ -301,6 +301,10 @@
       try { d = await api(`/api/page/${pageId}?${qs}`); }
       catch (err) { dash.innerHTML = `<div class="note">${icon("x")} ${esc(err.message)}</div>`; dash.classList.remove("loading"); return; }
       if (d.empty) return noData(dash);
+      if (d.message && !d.tiles.length && !d.charts.length) {  // e.g. no columns added yet
+        dash.innerHTML = `<div class="empty-state"><div class="big">${icon(page.icon)}</div><h2>Nothing to show yet</h2><p>${esc(d.message)}</p></div>`;
+        dash.classList.remove("loading"); return;
+      }
       main.querySelector("#subtitle").textContent = `${d.subtitle} · ${periodLabel()}`;
       // review status of the data on screen: Final once reviewed, Draft until then
       const chip = main.querySelector("#built"), rv = d.review || [];
@@ -554,7 +558,8 @@
   // "Mark as reviewed" makes the batch Final. Editing a Final batch starts the next revision.
   const rv = { batch: null, search: "", changed: false, page: 1, utility: 0, region: 0, all: false, tab: "rows", cols: null, job: null,
                ruleFilter: null, ref: null,
-               fb: { rule: { combine: "and", rules: [] }, action: "update", sets: [{ field: "AMOUNT", formula: "" }] } };
+               fb: { rule: { combine: "and", rules: [] }, action: "update", sets: [{ field: "AMOUNT", formula: "" }],
+                     newcol: { name: "", kind: "number", formula: "" } } };
   async function reviewPage() {
     if (!state.me.can_review) return notAllowed();
     const main = shell("review");
@@ -730,14 +735,21 @@
       return `${f ? f.label : node.field} ${rv.ref?.ops[node.op] || node.op}${["empty", "not_empty"].includes(node.op) ? "" : " " + (v ?? "")}`;
     }
 
+    async function refreshColumns() {  // an added or removed column changes the grid and the pickers
+      try { rv.cols = await api("/api/review/columns"); rv.ref = await api("/api/review/formula/reference"); } catch (e) {}
+    }
+
     async function formulaView() {
       const body = main.querySelector("#rv-body"), b = cur();
       if (!rv.ref) { try { rv.ref = await api("/api/review/formula/reference"); } catch (e) { return; } }
       const R = rv.ref, fb = rv.fb, FIELD = Object.fromEntries(R.fields.map((f) => [f.name, f]));
+      const added = R.fields.filter((f) => f.custom);
       const fieldOpts = (cur, editableOnly) => ["number", "code", "text", "date"].map((k) => {
-        const fs = R.fields.filter((f) => f.kind === k && (!editableOnly || f.editable));
+        const fs = R.fields.filter((f) => f.kind === k && !f.custom && (!editableOnly || f.editable));
         return fs.length ? `<optgroup label="${{ number: "Numbers", code: "Codes", text: "Text", date: "Dates" }[k]}">${fs.map((f) => `<option value="${f.name}" ${f.name === cur ? "selected" : ""}>${esc(f.label)}</option>`).join("")}</optgroup>` : "";
-      }).join("");
+      }).join("") + (added.length ? `<optgroup label="Added columns">${added.map((f) => `<option value="${f.name}" ${f.name === cur ? "selected" : ""}>${esc(f.label)}</option>`).join("")}</optgroup>` : "");
+      if (!fb.newcol) fb.newcol = { name: "", kind: "number", formula: "" };
+      const nc = fb.newcol, KIND = { number: "Number", text: "Text", date: "Date" };
       let saved = [];
       try { saved = (await api("/api/review/formulas/saved")).saved; } catch (e) {}
       body.innerHTML = `
@@ -750,6 +762,11 @@
               <button class="btn small ghost" id="fb-reset">${icon("undo")}Start over</button>
             </div>
           </div>
+          <div class="fb-cols"><span class="af-label">Added columns</span>
+            ${added.length ? added.map((f) => `<span class="fb-col"><b>${esc(f.label)}</b><small>${esc(KIND[f.kind] || f.kind)}</small>
+              <button class="btn small ghost qb-x" data-rmcol="${esc(f.name)}" title="Remove this column">${icon("x")}</button></span>`).join("")
+              : `<span class="muted">None yet. Choose <b>Add a column</b> in step 2 to add one.</span>`}
+          </div>
           <section class="fb-step"><div class="fb-num">1</div><div class="fb-body">
             <h4>Which rows</h4><p class="hint">Like a query: conditions joined by AND / OR, groups for mixing them. No conditions means every row of ${esc(fmtPeriod(b.period))}.</p>
             <div id="fb-rule"></div>
@@ -759,12 +776,18 @@
             <h4>What to do</h4>
             <div class="fb-actions">${Object.entries(R.actions).map(([k, label]) => `
               <label class="fb-action ${fb.action === k ? "on" : ""}"><input type="radio" name="fb-act" value="${k}" ${fb.action === k ? "checked" : ""}>
-                <span>${icon({ update: "edit", copy: "plus", delete: "trash" }[k])}</span><b>${esc(label)}</b>
-                <small>${{ update: "Set fields on every matching row", copy: "Add a copy of every matching row, with fields set", delete: "Remove every matching row" }[k]}</small></label>`).join("")}</div>
+                <span>${icon({ update: "edit", copy: "plus", delete: "trash", add_column: "table" }[k])}</span><b>${esc(label)}</b>
+                <small>${{ update: "Set fields on every matching row", copy: "Add a copy of every matching row, with fields set", delete: "Remove every matching row", add_column: "A new column; a formula fills the matching rows" }[k]}</small></label>`).join("")}</div>
           </div></section>
           <section class="fb-step" id="fb-sets-step" ${fb.action === "delete" ? "hidden" : ""}><div class="fb-num">3</div><div class="fb-body">
-            <h4>${fb.action === "copy" ? "Set values on the copies (optional)" : "Set values"}</h4>
-            <p class="hint">A formula like in Excel. Refer to fields as <code>[Amount]</code>; text goes in quotes. Formulas read each row's values before the change.</p>
+            <h4>${fb.action === "copy" ? "Set values on the copies (optional)" : fb.action === "add_column" ? "The new column" : "Set values"}</h4>
+            ${fb.action === "add_column" ? `
+            <div class="fb-newcol">
+              <label class="field"><span>Column name</span><input id="fb-nc-name" maxlength="40" value="${esc(nc.name)}" placeholder="e.g. Discount" autocomplete="off"></label>
+              <label class="field"><span>Type</span><select id="fb-nc-kind">${Object.entries(R.kinds).map(([k, v]) => `<option value="${k}" ${nc.kind === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+            </div>
+            <p class="hint">The column is added to every month. The formula fills the rows picked in step 1; every other row starts blank. Leave the formula empty for an empty column. Like any edit, the values reach the dashboards when you finalize.</p>`
+            : `<p class="hint">A formula like in Excel. Refer to fields as <code>[Amount]</code>; text goes in quotes. Formulas read each row's values before the change.</p>`}
             <div class="fb-toolbar" id="fb-toolbar">
               <select id="fb-ins-field"><option value="">Insert field…</option>${fieldOpts("", false)}</select>
               <select id="fb-ins-fn"><option value="">Insert function…</option>${Object.entries(R.functions).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select>
@@ -772,7 +795,7 @@
               <select id="fb-example"><option value="">Examples…</option>${R.examples.map((x, i) => `<option value="${i}">${esc(x.label)}</option>`).join("")}</select>
             </div>
             <div id="fb-sets"></div>
-            <button class="btn small ghost" id="fb-addset">${icon("plus")}Set another field</button>
+            ${fb.action === "add_column" ? "" : `<button class="btn small ghost" id="fb-addset">${icon("plus")}Set another field</button>`}
           </div></section>
           <section class="fb-step"><div class="fb-num">${fb.action === "delete" ? 3 : 4}</div><div class="fb-body">
             <h4>Preview</h4>
@@ -780,7 +803,7 @@
             <div class="fb-go">
               <button class="btn primary" id="fb-apply" disabled>${icon("check")}Apply</button>
               <button class="btn" id="fb-show">${icon("table")}Show matching rows</button>
-              <button class="btn ghost" id="fb-save">${icon("spark")}Save this formula</button>
+              <button class="btn ghost" id="fb-save" ${fb.action === "add_column" ? "hidden" : ""}>${icon("spark")}Save this formula</button>
             </div>
           </div></section>
         </div>`;
@@ -871,6 +894,16 @@
       let focused = null;
       const drawSets = () => {
         const box = body.querySelector("#fb-sets"); if (!box) return;
+        if (fb.action === "add_column") {
+          box.innerHTML = `<div class="fb-set" data-i="new">
+            <span class="fb-newname">${esc(nc.name || "New column")}</span><span class="fb-eq">=</span>
+            <div class="fb-fx"><span class="fx">fx</span><input class="fb-formula" data-i="new" value="${esc(nc.formula)}" spellcheck="false" autocomplete="off"
+              placeholder="${nc.kind === "number" ? "e.g. ROUND([Amount] * 0.1, 2)" : nc.kind === "date" ? '"2026-01-31" or empty' : 'e.g. IF([Amount] > 1000, "High", "Normal")'}"></div>
+            <span></span><div class="fb-err" id="fb-err-new"></div></div>`;
+          box.querySelectorAll(".fb-formula").forEach((el) => { el.onfocus = () => { focused = el; }; el.oninput = () => { nc.formula = el.value; schedule(); }; });
+          focused = box.querySelector(".fb-formula");
+          return;
+        }
         box.innerHTML = fb.sets.map((st, i) => `
           <div class="fb-set" data-i="${i}">
             <select class="fb-set-field" data-i="${i}">${fieldOpts(st.field, true)}</select>
@@ -893,7 +926,8 @@
         const a = el.selectionStart ?? el.value.length, z = el.selectionEnd ?? el.value.length;
         el.value = el.value.slice(0, a) + text + el.value.slice(z);
         el.focus(); const c = a + text.length - (text.endsWith("()") ? 1 : 0); el.setSelectionRange(c, c);
-        fb.sets[+el.dataset.i].formula = el.value; schedule();
+        if (el.dataset.i === "new") nc.formula = el.value; else fb.sets[+el.dataset.i].formula = el.value;
+        schedule();
       };
       if (fb.action !== "delete") {
         body.querySelector("#fb-ins-field").onchange = (e) => { if (e.target.value) insert(`[${FIELD[e.target.value].label}]`); e.target.value = ""; };
@@ -901,20 +935,33 @@
         body.querySelectorAll(".fb-op").forEach((el) => el.onmousedown = (e) => { e.preventDefault(); insert(el.dataset.ins.trim() === "(" || el.dataset.ins.trim() === ")" ? el.dataset.ins.trim() : el.dataset.ins); });
         body.querySelector("#fb-example").onchange = (e) => {
           const x = R.examples[+e.target.value]; e.target.value = ""; if (!x) return;
+          if (fb.action === "add_column") { nc.formula = x.formula; drawSets(); schedule(); return; }
           const i = fb.sets.findIndex((st) => st.field === x.field);
           if (i >= 0) fb.sets[i].formula = x.formula; else fb.sets.push({ field: x.field, formula: x.formula });
           drawSets(); schedule();
         };
-        body.querySelector("#fb-addset").onclick = () => {
+        body.querySelector("#fb-nc-name")?.addEventListener("input", (e) => { nc.name = e.target.value; body.querySelector(".fb-newname").textContent = nc.name || "New column"; schedule(); });
+        body.querySelector("#fb-nc-kind")?.addEventListener("change", (e) => { nc.kind = e.target.value; drawSets(); schedule(); });
+        body.querySelector("#fb-addset")?.addEventListener("click", () => {
           const used = new Set(fb.sets.map((st) => st.field));
           fb.sets.push({ field: R.fields.find((f) => f.editable && !used.has(f.name))?.name || "AMOUNT", formula: "" });
           drawSets(); schedule();
-        };
+        });
       }
+      body.querySelectorAll("[data-rmcol]").forEach((el) => el.onclick = async () => {
+        const f = FIELD[el.dataset.rmcol];
+        if (!confirm(`Remove the column "${f.label}"?\n\nIt disappears from the grid, the formula builder and the dashboards for every month. Its values stay in the change history.`)) return;
+        if (await act("/api/review/columns/remove", { ident: f.name })) {
+          toast(`${icon("check")}<span>Column <b>${esc(f.label)}</b> removed.</span>`, "good");
+          await refreshColumns(); formulaView();
+        }
+      });
 
       // ----- step 4: preview (debounced), apply, save, show rows
       let timer, seq = 0, last = null;
-      const spec = () => ({ rule: fb.rule, action: fb.action, sets: fb.action === "delete" ? [] : fb.sets });
+      const spec = () => fb.action === "add_column"
+        ? { rule: fb.rule, action: "add_column", column: { name: nc.name, kind: nc.kind }, formula: nc.formula }
+        : { rule: fb.rule, action: fb.action, sets: fb.action === "delete" ? [] : fb.sets };
       function schedule() { clearTimeout(timer); timer = setTimeout(preview, 450); }
       async function countOnly() {
         const my = seq;
@@ -943,6 +990,19 @@
         last = r.ok ? d : null;
         applyBtn.disabled = true;
         if (!r.ok) {
+          if (fb.action === "add_column") {  // the name, the type or the fill formula
+            if (d.field === "new") {
+              countOnly();
+              const src = nc.formula, pos = Math.min(d.pos ?? src.length, src.length);
+              body.querySelector("#fb-err-new").innerHTML = `${icon("x")}<span>${esc(d.detail.replace(/^[^:]+: /, ""))}</span><code>${esc(src.slice(0, pos))}<mark>${esc(src.slice(pos, pos + 1) || " ")}</mark>${esc(src.slice(pos + 1))}</code>`;
+              body.querySelector('.fb-formula[data-i="new"]')?.classList.add("bad");
+              box.innerHTML = `<div class="note">Fix the formula above to see the preview.</div>`;
+            } else {
+              countOnly();
+              box.innerHTML = nc.name.trim() ? `<div class="error">${esc(d.detail || "Cannot preview this")}</div>` : `<div class="note">Give the new column a name.</div>`;
+            }
+            return;
+          }
           const i = d.field ? fb.sets.findIndex((st) => st.field === d.field) : -1;
           if (i >= 0) countOnly();  // the rule is fine: still say how many rows it matches
           else body.querySelector("#fb-count").innerHTML = "";
@@ -958,36 +1018,47 @@
           return;
         }
         body.querySelector("#fb-count").innerHTML = `${icon("search")}<b>${d.matched.toLocaleString()}</b> of ${d.batch_rows.toLocaleString()} rows match <span class="muted">· ${esc(d.rule_text)}</span>`;
-        const verb = { update: "will change", copy: "will be added", delete: "will be deleted" }[d.action];
+        const verb = { update: "will change", copy: "will be added", delete: "will be deleted", add_column: "get a value" }[d.action];
+        const lab = (c) => (d.labels && d.labels[c]) || FIELD[c]?.label || c;
+        const isNum = (c) => FIELD[c]?.kind === "number" || (c === "x:__new__" && nc.kind === "number");
         const cols = d.columns, tg = new Set(d.targets);
         const shown = d.action === "update" ? cols : cols;
         box.innerHTML = `
           <div class="fb-stats">
             <div class="fb-stat"><small>Rows matched</small><b>${d.matched.toLocaleString()}</b></div>
-            <div class="fb-stat accent"><small>Rows that ${verb.replace("will ", "will ")}</small><b>${d.affected.toLocaleString()}</b></div>
-            <div class="fb-stat"><small>Amount of these rows</small><b>${money(d.amount_before)}</b>${d.action === "update" ? `<span>→ ${money(d.amount_after)}</span>` : d.action === "copy" ? `<span>copies add ${money(d.amount_after)}</span>` : `<span>removed</span>`}</div>
+            <div class="fb-stat accent"><small>Rows that ${verb}</small><b>${d.affected.toLocaleString()}</b></div>
+            <div class="fb-stat"><small>Amount of these rows</small><b>${money(d.amount_before)}</b>${d.action === "update" ? `<span>→ ${money(d.amount_after)}</span>` : d.action === "copy" ? `<span>copies add ${money(d.amount_after)}</span>` : d.action === "add_column" ? `<span>unchanged</span>` : `<span>removed</span>`}</div>
             <div class="fb-stat"><small>${esc(fmtPeriod(b.period))} total</small><b>${money(d.batch_amount_after)}</b><span class="${d.batch_amount_after - d.batch_amount >= 0 ? "up" : "down"}">${signed(d.batch_amount_after - d.batch_amount)} vs now</span></div>
           </div>
           ${d.invalid.length ? `<div class="error">${icon("x")} Cannot apply: ${d.invalid.map((x) => `${esc(x.label)} would be invalid on ${x.rows.toLocaleString()} row(s)`).join("; ")}. Utility and Island must be 1–3, numbers must be numbers, dates yyyy-mm-dd.</div>` : ""}
           ${d.too_many ? `<div class="error">At most 100,000 rows can be copied at once.</div>` : ""}
           ${d.empties_month ? `<div class="error">This would delete every row of the month. To replace a month, upload its file again.</div>` : ""}
-          ${d.sample.length ? `<div class="tbl-wrap"><table class="data fb-sample"><thead><tr><th class="n">Line</th>${shown.map((c) => `<th class="${FIELD[c]?.kind === "number" ? "n" : ""} ${tg.has(c) ? "tgt" : ""}">${esc(FIELD[c]?.label || c)}</th>`).join("")}</tr></thead><tbody>
+          ${d.sample.length ? `<div class="tbl-wrap"><table class="data fb-sample"><thead><tr><th class="n">Line</th>${shown.map((c) => `<th class="${isNum(c) ? "n" : ""} ${tg.has(c) ? "tgt" : ""}">${esc(lab(c))}</th>`).join("")}</tr></thead><tbody>
             ${d.sample.map((row) => `<tr class="${d.action === "delete" ? "p-delete" : ""}"><td class="n num">${d.action === "copy" ? `<span class="tag new">Copy of</span>` : ""}${row.line_no}</td>${shown.map((c) => {
               const was = row.before[c], now = row.after[c], diff = d.action !== "delete" && was !== now;
-              return `<td class="${FIELD[c]?.kind === "number" ? "n" : ""} ${diff ? "diff" : ""}">${diff ? `<s>${esc(was)}</s> <b>${esc(now)}</b>` : esc(was)}</td>`;
+              return `<td class="${isNum(c) ? "n" : ""} ${diff ? "diff" : ""}">${diff ? `${was === "" ? "" : `<s>${esc(was)}</s> `}<b>${esc(now)}</b>` : esc(was)}</td>`;
             }).join("")}</tr>`).join("")}
             </tbody></table></div><p class="hint">First ${d.sample.length} of the rows that ${verb}.</p>` : `<div class="note">No rows ${verb}.</div>`}`;
-        applyBtn.disabled = !d.affected || d.invalid.length || d.too_many || d.empties_month || bgBusy();
-        applyBtn.innerHTML = `${icon("check")}${{ update: "Change", copy: "Copy", delete: "Delete" }[d.action]} ${d.affected.toLocaleString()} row${d.affected === 1 ? "" : "s"}`;
+        applyBtn.disabled = (!d.affected && d.action !== "add_column") || d.invalid.length || d.too_many || d.empties_month || bgBusy();
+        applyBtn.innerHTML = d.action === "add_column"
+          ? `${icon("plus")}Add column “${esc(nc.name.trim())}”${d.affected ? ` with ${d.affected.toLocaleString()} value${d.affected === 1 ? "" : "s"}` : " (empty)"}`
+          : `${icon("check")}${{ update: "Change", copy: "Copy", delete: "Delete" }[d.action]} ${d.affected.toLocaleString()} row${d.affected === 1 ? "" : "s"}`;
       }
       body.querySelector("#fb-apply").onclick = async () => {
         if (!last) return;
         const n = last.affected, word = { update: "change", copy: "copy", delete: "delete" }[last.action];
-        if (!confirm(`${word[0].toUpperCase() + word.slice(1)} ${n.toLocaleString()} row(s) of ${fmtPeriod(b.period)}?\n\nThe changes join the pending edits; the dashboards change only when you finalize.`)) return;
+        const ask = last.action === "add_column"
+          ? `Add the ${nc.kind} column "${nc.name.trim()}"${n ? `, with values on ${n.toLocaleString()} row(s) of ${fmtPeriod(b.period)}` : ""}?\n\nThe column exists for every month from now on. Its values join the pending edits; the dashboards show them when you finalize.`
+          : `${word[0].toUpperCase() + word.slice(1)} ${n.toLocaleString()} row(s) of ${fmtPeriod(b.period)}?\n\nThe changes join the pending edits; the dashboards change only when you finalize.`;
+        if (!confirm(ask)) return;
         const btn = body.querySelector("#fb-apply"); btn.disabled = true;
         try {
           await api(`/api/review/${encodeURIComponent(b.batch_id)}/formula/apply`, { method: "POST", body: JSON.stringify(spec()) });
-          toast(`${icon("check")}<span><b>${n.toLocaleString()} row(s)</b> ${{ update: "changed", copy: "copied", delete: "marked for deletion" }[last.action]}. Review them, then Finalize to rebuild the dashboards.</span>`, "good");
+          if (last.action === "add_column") {
+            toast(`${icon("check")}<span>Column <b>${esc(nc.name.trim())}</b> added${n ? `, ${n.toLocaleString()} value(s) pending` : ""}. Finalize to show it on the dashboards.</span>`, "good");
+            rv.fb.newcol = { name: "", kind: "number", formula: "" }; rv.fb.action = "update";
+            await refreshColumns();
+          } else toast(`${icon("check")}<span><b>${n.toLocaleString()} row(s)</b> ${{ update: "changed", copy: "copied", delete: "marked for deletion" }[last.action]}. Review them, then Finalize to rebuild the dashboards.</span>`, "good");
           await loadBatches(); panel();
         } catch (err) { toast(`${icon("x")}<span>${esc(err.message)}</span>`, "bad"); btn.disabled = false; }
       };
@@ -1139,6 +1210,7 @@
       const first = state.me.pages[0]?.id || (state.me.can_load ? "load" : "");
       location.replace("#/" + first); return;
     }
+    if (location.hash.includes("?")) readUrl();  // a link with filters (e.g. "Open dashboards" for a month)
     if (id === "load") loadPage();
     else if (id === "review") reviewPage();
     else if (id === "users") usersPage();

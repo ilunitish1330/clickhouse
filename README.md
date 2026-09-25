@@ -159,7 +159,9 @@ the web app (**Data Review**): edits wait in `ub.raw_pending` and are logged cel
 `ub.edit_log`, then **Finalize modified data** (`ub_load.py --apply`) writes them into the raw rows
 and rebuilds that batch, and **Mark as reviewed** makes it **Final** (`ub.batch_events`). Editing
 Final data starts the next Draft revision. `SELECT * FROM ub.v_batches` shows what's loaded and
-`SELECT * FROM ub.v_batch_status` its review status.
+`SELECT * FROM ub.v_batch_status` its review status. Columns a reviewer adds in the formula
+builder are kept in each row's `extra` map (`ub_custom.py`); `SELECT * FROM ub.v_custom` shows
+them as real columns.
 
 - Quantity is kWh for electricity and m³ for water. Never sum it across `utility_code`.
   `consumption_qty` counts consumption lines only.

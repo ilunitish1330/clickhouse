@@ -172,3 +172,21 @@ CREATE TABLE IF NOT EXISTS ub.saved_formulas
 )
 ENGINE = ReplacingMergeTree(saved_at)
 ORDER BY name;
+
+-- Columns a reviewer added (ub_custom.py). Values live in each row's `extra` map under
+-- the column's key; the key is never reused. ub.v_custom shows them as real columns.
+CREATE TABLE IF NOT EXISTS ub.custom_columns
+(
+    key        String,                   -- c1, c2, ...
+    name       String,
+    kind       LowCardinality(String),   -- number | text | date
+    created_by String,
+    changed_at DateTime64(3) DEFAULT now64(3),
+    deleted    UInt8 DEFAULT 0
+)
+ENGINE = ReplacingMergeTree(changed_at)
+ORDER BY key;
+
+ALTER TABLE ub.raw_load ADD COLUMN IF NOT EXISTS extra Map(String, String);
+ALTER TABLE ub.raw_rows ADD COLUMN IF NOT EXISTS extra Map(String, String);
+ALTER TABLE ub.raw_pending ADD COLUMN IF NOT EXISTS extra Map(String, String);

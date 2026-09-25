@@ -424,6 +424,15 @@ async def formula_apply(batch_id: str, request: Request):
     return review_call(bulk.apply, batch_id, spec, user["username"])
 
 
+@app.post("/api/review/columns/remove")
+async def columns_remove(request: Request):
+    """Hide an added column everywhere; its values stay in the rows and the change log."""
+    user = reviewer(request)
+    b = await request.json()
+    audit(user["username"], "column_removed", str(b.get("ident", "")))
+    return review_call(bulk.remove_column, str(b.get("ident", "")), user["username"], locked=False)
+
+
 @app.get("/api/review/formulas/saved")
 def formulas_saved(request: Request):
     reviewer(request)

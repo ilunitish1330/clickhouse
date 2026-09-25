@@ -13,6 +13,7 @@ import json
 import re
 
 import ax_load
+import ub_custom
 from ub_load import COLS, sql_list
 
 EDITABLE = [c for c in COLS if c not in ("BatchId", "LoadDateTime")]
@@ -50,10 +51,38 @@ def q(sql: str) -> list[dict]:
     return json.loads(ax_load.ch(sql + " FORMAT JSON"))["data"]
 
 
+# Columns a reviewer added (ub_custom.py) are "x:<key>" here; their values live in the row's
+# `extra` map. A row is a dict of the export's columns plus "extra" ({key: value}).
+
+def custom() -> dict:
+    """"x:<key>" -> the added column, for the columns in use now."""
+    return {f"x:{c['key']}": c for c in ub_custom.columns()}
+
+
 def columns() -> dict:
-    return {"all": COLS, "editable": EDITABLE, "default": DEFAULT_VIEW, "labels": LABELS,
-            "number": sorted(NUMBER), "whole": sorted(WHOLE), "codes": {k: list(v) for k, v in CODES.items()},
-            "dates": sorted(DATES)}
+    cus = custom()
+    labels = dict(LABELS)
+    labels.update({f"x:{c['key']}": f"{c['name']} (removed)" for c in ub_custom.columns(include_removed=True)})
+    labels.update({k: c["name"] for k, c in cus.items()})
+    return {"all": COLS + list(cus), "editable": EDITABLE + list(cus), "default": DEFAULT_VIEW + list(cus),
+            "labels": labels, "number": sorted(NUMBER) + [k for k, c in cus.items() if c["kind"] == "number"],
+            "whole": sorted(WHOLE), "codes": {k: list(v) for k, v in CODES.items()},
+            "dates": sorted(DATES) + [k for k, c in cus.items() if c["kind"] == "date"],
+            "custom": [{"ident": k, **c} for k, c in cus.items()]}
+
+
+def validate_custom(col: str, value, cus: dict) -> str:
+    c = cus.get(col)
+    if not c:
+        raise Invalid("No such added column")
+    v = str(value if value is not None else "").replace("\t", " ").replace("\n", " ").strip()
+    if len(v) > 500:
+        raise Invalid(f"{c['name']}: at most 500 characters")
+    if c["kind"] == "number" and v and not re.fullmatch(r"-?\d+(\.\d+)?([eE][-+]?\d+)?", v):
+        raise Invalid(f"{c['name']} must be a number, like 1250.75")
+    if c["kind"] == "date" and v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        raise Invalid(f"{c['name']} must be a date as yyyy-mm-dd")
+    return v
 
 
 def validate(col: str, value) -> str:
@@ -106,8 +135,8 @@ def batch(batch_id: str) -> dict:
 def _merged(batch_id: str) -> str:
     """The batch's rows as they will be once the pending edits are finalized, plus the pending state."""
     b = sql_list([batch_id])
-    cols = ", ".join(f"if(p.edited_by != '', p.{c}, r.{c}) AS {c}" for c in COLS)
-    raw = ", ".join(COLS)
+    cols = ", ".join(f"if(p.edited_by != '', p.{c}, r.{c}) AS {c}" for c in COLS + ["extra"])
+    raw = ", ".join(COLS + ["extra"])
     return f"""(
         SELECT r.line_no AS line_no, if(p.edited_by != '', p.action, '') AS pending, {cols}
         FROM (SELECT line_no, {raw} FROM ub.raw_rows WHERE batch_id = {b}) AS r
@@ -121,6 +150,7 @@ def rows(batch_id: str, search: str = "", changed: bool = False, page: int = 1, 
     conds = ["1"]
     if rule:  # the formula builder's "Which rows", to see exactly what it matches
         import formula
+        formula.load_custom()
         conds.append(f"({formula.compile_rule(rule)}) AND pending != 'delete'")
     if search.strip():
         s = sql_list([search.strip()])
@@ -142,15 +172,18 @@ def rows(batch_id: str, search: str = "", changed: bool = False, page: int = 1, 
     edited = [int(r["line_no"]) for r in got if r["pending"] in ("update", "delete")]
     before = {}
     if edited:
-        for r in q(f"SELECT line_no, {', '.join(COLS)} FROM ub.raw_rows WHERE batch_id = {sql_list([batch_id])} "
+        for r in q(f"SELECT line_no, {', '.join(COLS)}, extra FROM ub.raw_rows WHERE batch_id = {sql_list([batch_id])} "
                    f"AND line_no IN ({', '.join(str(n) for n in edited)})"):
             before[int(r["line_no"])] = r
+    cus = custom()
     out = []
     for r in got:
         n = int(r["line_no"])
         old = before.get(n, {})
-        out.append({"line_no": n, "pending": r["pending"], "values": {c: r[c] for c in COLS},
-                    "changed": {c: old[c] for c in COLS if old and r["pending"] == "update" and old[c] != r[c]}})
+        values = {c: r[c] for c in COLS} | {k: (r["extra"] or {}).get(c["key"], "") for k, c in cus.items()}
+        was = {c: old[c] for c in COLS} | {k: (old.get("extra") or {}).get(c["key"], "") for k, c in cus.items()} if old else {}
+        out.append({"line_no": n, "pending": r["pending"], "values": values,
+                    "changed": {c: was[c] for c in values if was and r["pending"] == "update" and was[c] != values[c]}})
     return {"total": total, "page": page, "size": size, "rows": out}
 
 
@@ -166,23 +199,30 @@ def history(batch_id: str, limit: int = 300) -> list[dict]:
 def _current(batch_id: str, line_no: int) -> tuple[dict | None, str]:
     """The row as the reviewer sees it now, and its pending action ('' = untouched)."""
     b = sql_list([batch_id])
-    p = q(f"SELECT action, {', '.join(COLS)} FROM ub.raw_pending FINAL WHERE batch_id = {b} AND line_no = {int(line_no)}")
+    p = q(f"SELECT action, {', '.join(COLS)}, extra FROM ub.raw_pending FINAL WHERE batch_id = {b} AND line_no = {int(line_no)}")
     if p:
-        return {c: p[0][c] for c in COLS}, p[0]["action"]
-    r = q(f"SELECT {', '.join(COLS)} FROM ub.raw_rows WHERE batch_id = {b} AND line_no = {int(line_no)}")
-    return ({c: r[0][c] for c in COLS}, "") if r else (None, "")
+        return {c: p[0][c] for c in COLS + ["extra"]}, p[0]["action"]
+    r = q(f"SELECT {', '.join(COLS)}, extra FROM ub.raw_rows WHERE batch_id = {b} AND line_no = {int(line_no)}")
+    return ({c: r[0][c] for c in COLS + ["extra"]}, "") if r else (None, "")
 
 
 def _original(batch_id: str, line_no: int) -> dict | None:
-    r = q(f"SELECT {', '.join(COLS)} FROM ub.raw_rows WHERE batch_id = {sql_list([batch_id])} AND line_no = {int(line_no)}")
-    return {c: r[0][c] for c in COLS} if r else None
+    r = q(f"SELECT {', '.join(COLS)}, extra FROM ub.raw_rows WHERE batch_id = {sql_list([batch_id])} AND line_no = {int(line_no)}")
+    return {c: r[0][c] for c in COLS + ["extra"]} if r else None
+
+
+def map_sql(extra: dict | None) -> str:
+    """A Map(String, String) literal, keys and values quoted and escaped."""
+    items = [(k, v) for k, v in (extra or {}).items() if str(v) != ""]
+    return "map(" + ", ".join(f"{sql_list([k])}, {sql_list([v])}" for k, v in items) + ")" if items \
+        else "CAST(map(), 'Map(String, String)')"
 
 
 def _write(batch_id: str, line_no: int, action: str, values: dict, user: str) -> None:
-    cols = ["batch_id", "line_no", "action"] + COLS + ["edited_by"]
+    cols = ["batch_id", "line_no", "action"] + COLS + ["edited_by", "extra"]
     vals = [batch_id, str(line_no), action] + [values.get(c, "") for c in COLS] + [user]
-    ax_load.ch(f"INSERT INTO ub.raw_pending ({', '.join(cols)}) VALUES "
-               f"({sql_list(vals[:1])}, {int(line_no)}, {sql_list(vals[2:])})")
+    ax_load.ch(f"INSERT INTO ub.raw_pending ({', '.join(cols)}) SELECT "
+               f"{sql_list(vals[:1])}, {int(line_no)}, {sql_list(vals[2:])}, {map_sql(values.get('extra'))}")
 
 
 def _log(batch_id: str, user: str, action: str, line_no: int = 0, column: str = "", old: str = "", new: str = "") -> None:
@@ -215,14 +255,30 @@ def edit(batch_id: str, line_no: int, changes: dict, user: str) -> dict:
         raise Invalid("No such row")
     if action == "delete":
         raise Invalid("This row is marked for deletion: undo that first")
-    clean = _fill_companions({c: validate(c, v) for c, v in changes.items()})
-    new = {**cur, **clean}
+    cus = custom()
+    clean = _fill_companions({c: validate(c, v) for c, v in changes.items() if not c.startswith("x:")})
+    extra_changes = {c: validate_custom(c, v, cus) for c, v in changes.items() if c.startswith("x:")}
+    cur["extra"] = {k: v for k, v in (cur.get("extra") or {}).items() if v != ""}
+    new = {**cur, **clean, "extra": dict(cur["extra"])}
+    for c, v in extra_changes.items():
+        if v:
+            new["extra"][cus[c]["key"]] = v
+        else:
+            new["extra"].pop(cus[c]["key"], None)
     if new == cur:
         return {"ok": True, "unchanged": True}
+    how = "update" if action != "insert" else "insert"
     for c in clean:
         if cur[c] != new[c]:
-            _log(batch_id, user, "update" if action != "insert" else "insert", line_no, c, cur[c], new[c])
-    if action != "insert" and new == _original(batch_id, line_no):
+            _log(batch_id, user, how, line_no, c, cur[c], new[c])
+    for c in extra_changes:
+        k = cus[c]["key"]
+        if cur["extra"].get(k, "") != new["extra"].get(k, ""):
+            _log(batch_id, user, how, line_no, c, cur["extra"].get(k, ""), new["extra"].get(k, ""))
+    orig = _original(batch_id, line_no)
+    if orig is not None:
+        orig["extra"] = {k: v for k, v in (orig.get("extra") or {}).items() if v != ""}
+    if action != "insert" and new == orig:
         _drop_pending(batch_id, line_no)  # edited back to what it was: nothing pending
     else:
         _write(batch_id, line_no, action or "update", new, user)
@@ -231,14 +287,17 @@ def edit(batch_id: str, line_no: int, changes: dict, user: str) -> dict:
 
 def add(batch_id: str, values: dict, user: str) -> dict:
     batch(batch_id)
+    cus = custom()
     clean = _fill_companions({c: validate(c, v) for c, v in values.items() if c in EDITABLE})
+    extra = {cus[c]["key"]: validate_custom(c, v, cus) for c, v in values.items() if c in cus}
+    extra = {k: v for k, v in extra.items() if v}
     for need in ("UTILITYTYPE", "REGION", "AMOUNT", "QUANTITY"):
         if not clean.get(need):
             raise Invalid(f"{LABELS[need]} is required for a new row")
     b = sql_list([batch_id])
     n = int(q(f"SELECT greatest((SELECT max(line_no) FROM ub.raw_rows WHERE batch_id = {b}), "
               f"(SELECT max(line_no) FROM ub.raw_pending WHERE batch_id = {b})) + 1 AS n")[0]["n"])
-    row = {c: "" for c in COLS} | clean | {"BatchId": batch_id}
+    row = {c: "" for c in COLS} | clean | {"BatchId": batch_id, "extra": extra}
     _write(batch_id, n, "insert", row, user)
     _log(batch_id, user, "insert", n, "", "", f"{row['AMOUNT']} ({row['CUSTID'] or 'no customer'})")
     return {"ok": True, "line_no": n}

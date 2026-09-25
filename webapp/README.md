@@ -87,6 +87,21 @@ The **Formula builder** tab changes many rows at once, in four steps:
    a division by zero, an amount of 100 trillion or more, a date not written yyyy-mm-dd) are
    counted and block the apply, and so does deleting every row of a month.
 
+**Adding a column**: choose **Add a column** in step 2, give it a name and a type (number,
+text or date), and optionally a formula that fills the rows picked in step 1 (e.g. *Discount* =
+`ROUND([Amount] * 0.1, 2)`, or *Band* = `IF([Amount] > 1000, "High", "Normal")`). Every other
+row starts blank. The column exists for every month from then on: it shows in the grid (editable),
+can be used in conditions and formulas like any field (`[Discount]`), and can be removed from the
+strip at the top of the builder (its values stay in the change history). Its values reach
+ClickHouse and the dashboards when you finalize:
+
+- **ClickHouse**: `SELECT * FROM ub.v_custom` has every added column as a real, typed column
+  (number, text, date) next to the billing line's keys, ready for queries or Power BI.
+- **Dashboards**: the **Custom Columns** dashboard shows each number column's total, by island,
+  period and tariff group, and each text or date column's revenue and rows by value, with the
+  usual filters and role limits.
+- An upload whose file has a column with the same name fills it.
+
 Applying adds the changes to the pending edits, like hand edits: check them on the Rows tab
 (**Show matching rows**), then Finalize. Formulas can be saved and loaded again on any period.
 Formulas are parsed by the app (`formula.py`) and only known fields, functions and quoted
@@ -96,7 +111,8 @@ Every change is logged (who, when, before, after) under **Change history**.
 
 `python3 webapp/test_formula.py` tests the formula builder thoroughly on a throwaway test month
 (it never edits the real months): the formula language, mistakes, hostile input, conditions,
-the three actions, Finalize end to end, roles, and speed. The dashboards show
+the actions, added columns, Finalize end to end, roles, and speed. `test_webapp.py` also uses
+a throwaway month for its review checks. The dashboards show
 whether what's on screen is Draft or Final.
 
 ## Periods
@@ -116,7 +132,8 @@ loses its dates, and the billing month then has to be recovered from the batch.
   customer and connection roll-ups (bill size, rank, change since the previous period)
 - `review.py`: the review workflow: rows with pending edits, edit / add / delete / undo, the log
 - `formula.py`: the formula and condition language, parsed and compiled to SQL
-- `bulk.py`: the formula builder's preview and apply (change / copy / delete), saved formulas
+- `bulk.py`: the formula builder's preview and apply (change / copy / delete / add a column), saved formulas
+- `../ub_custom.py`: added columns: definitions, the `extra` map on each row, the `ub.v_custom` view
 - `roles.py`: roles, their pages and utilities, and the default users
 - `static/`: the front end (HTML, CSS, SVG charts). It has no external libraries, so it works on a
   network without internet access.

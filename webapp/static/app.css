@@ -594,3 +594,17 @@ table.fb-sample tr.p-delete td { text-decoration: line-through; color: var(--mut
 @media (max-width: 860px) { .qb-rule select, .qb-rule input { flex: 1 1 130px; min-width: 0; } .qb-rule input.qb-formula { flex-basis: 100%; } }
 .qb-head { flex-wrap: wrap; }
 .qb-head .seg { flex: none; }
+
+/* ---- added columns ---- */
+.fb-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.fb-cols { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+.fb-cols .muted { color: var(--muted); }
+.fb-col { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #8a6fd6 40%, transparent); background: color-mix(in srgb, #8a6fd6 10%, var(--surface)); }
+.fb-col small { color: var(--muted); }
+.fb-newcol { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; max-width: 560px; }
+.fb-newcol input, .fb-newcol select { font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--ink); width: 100%; }
+.fb-newname { font-weight: 700; color: #8a6fd6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1100px) { .fb-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.btn[hidden] { display: none; }

@@ -43,7 +43,7 @@ def main() -> None:
 
     ceo = login("ceo")
     me = ceo.get("/api/me").json()
-    assert me["must_change"] and len(me["pages"]) == 10 and not me["can_load"]
+    assert me["must_change"] and len(me["pages"]) == 11 and not me["can_load"]
     total = revenue(ceo)
     islands = {r["label"] for r in ceo.get("/api/page/executive", params={"period": "2026-01-01"}).json()["charts"][1]["rows"]}
     assert islands == {"Mahe Island", "Praslin Island", "La Digue Island"}
@@ -112,12 +112,15 @@ def main() -> None:
     assert abs(both - each) < 0.01, "a range (in either order) adds up its months"
     assert revenue(ceo, period="", pfrom=last, pto=last) == revenue(ceo, period=last), "a one-month range is that month"
 
-    # review: only reviewers; an edit waits until it is finalized, then rebuilds; Reviewed makes it Final
+    # review: only reviewers; an edit waits until it is finalized, then rebuilds; Reviewed makes it Final.
+    # All on a throwaway test month (test_formula.py builds it), never on the real months.
+    import test_formula
+    test_formula.drop_batch()
+    test_formula.make_batch()
+    b, last = test_formula.BATCH, test_formula.PERIOD
     assert ceo.get("/api/review/batches").status_code == 403
     rv = login("reviewer")
-    batches = rv.get("/api/review/batches").json()["batches"]
-    b = next(x for x in batches if x["period"] == last)["batch_id"]
-    rv.post(f"/api/review/{b}/discard")  # a clean start, even after an interrupted run
+    assert any(x["batch_id"] == b for x in rv.get("/api/review/batches").json()["batches"])
     row = rv.get(f"/api/review/{b}/rows", params={"size": 10}).json()["rows"][0]
     line, amount = row["line_no"], row["values"]["AMOUNT"]
     assert rv.post(f"/api/review/{b}/edit", json={"line_no": line, "changes": {"AMOUNT": "abc"}}).status_code == 400
@@ -203,4 +206,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        import test_formula
+        test_formula.drop_batch()  # the test month goes, whatever happened

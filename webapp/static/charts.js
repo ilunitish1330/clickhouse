@@ -25,6 +25,7 @@
       case "money": return { text: short ? compact(v) : full(v), unit: CURRENCY };
       case "qty": return { text: short ? compact(v) : full(v, Math.abs(v) < 100 ? 1 : 0), unit: unit || "" };
       case "rate": return { text: full(v, 2), unit: unit ? `${CURRENCY}/${unit}` : CURRENCY };
+      case "num": return { text: short && Math.abs(v) >= 1e4 ? compact(v) : v.toLocaleString(undefined, { maximumFractionDigits: 2 }), unit: "" };
       case "pct": return { text: (v * 100).toLocaleString(undefined, { maximumFractionDigits: 1, minimumFractionDigits: 1 }) + "%", unit: "" };
       default: return { text: short && Math.abs(v) >= 1e6 ? compact(v) : full(v), unit: "" };
     }
