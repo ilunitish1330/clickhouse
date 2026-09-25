@@ -1,7 +1,8 @@
 # PUC Analytics web app
 
-Role-based dashboards over the ClickHouse `ub` billing data, plus a **Run** button that loads a
-billing export into ClickHouse. Every dashboard is aggregated from the raw rows when it is opened.
+Role-based dashboards over the ClickHouse `ub` billing data, a **Run** button that loads a billing
+export into ClickHouse and builds its aggregates and dashboards, and a review workflow in which a
+reviewer checks and edits the data before it is marked Final.
 
 ```bash
 pip install -r webapp/requirements.txt
@@ -29,6 +30,7 @@ different one.
 | service | Customer Service Officer | customers and consumption |
 | auditor | Internal Auditor | every dashboard plus the load history, read-only |
 | operator | Data Operator | Data Load only |
+| reviewer | Data Reviewer | every dashboard plus Data Review: edit rows, finalize, mark reviewed |
 
 Every user also has an **island**. Any role can be limited to Mahe, Praslin or La Digue, which
 filters every number the user sees. The limits are applied inside the database queries on the
@@ -40,12 +42,29 @@ Roles are defined in `roles.py`. To add a role, add an entry there, then assign 
 ## Loading data
 
 Go to **Data Load**, drop the Statistic Report export (`.xlsx`, `.csv` or a `.zip`) and press **Run**.
-The app runs `ub_load.py` and shows its log live. The rows are stored in ClickHouse as they are,
-and the stored rows and amounts are checked against the file. Nothing is aggregated then: each
-dashboard reads the raw rows it needs (only that period's batches, utilities and islands) and
-aggregates them in ClickHouse when it is opened, 0.2 to 0.8 s the first time. The header shows how
-many raw rows it read; results are reused until new data is loaded. **Build Power BI tables** is
-only needed before a Power BI refresh.
+The app runs `ub_load.py` and shows its log live: the rows are stored in ClickHouse and checked
+against the file, then the aggregates and dashboards are built. The upload is live at once, as a
+**Draft**.
+
+## Reviewing data
+
+**Data Review** (roles `reviewer` and `admin`) lists every uploaded period with its status.
+
+1. Check the dashboards (**Open dashboards**) and the rows. Rows can be searched and filtered, and
+   edited in place: change any cell, **Add row**, or delete a row. A changed code fills in its
+   labels (island, utility, tariff group). Values are checked: numbers must be numbers, Utility
+   and Island 1 to 3, dates yyyy-mm-dd.
+2. Edits wait; the dashboards do not change yet. **Finalize modified data** writes them and
+   rebuilds that period's aggregates and dashboards (a new revision, still a Draft).
+3. **Mark as reviewed** makes the period **Final**. Editing Final data later, of any period,
+   starts the next Draft revision.
+
+Every change is logged (who, when, before, after) under **Change history**. The dashboards show
+whether what's on screen is Draft or Final.
+
+## Periods
+
+Every dashboard can show one month, a range (**Range from – to…**) or all periods combined.
 
 A 580k-row file takes about 30 seconds. A file with the same name replaces its earlier load.
 Uploaded files are kept in `data/uploads/`.
@@ -56,8 +75,9 @@ loses its dates, and the billing month then has to be recovered from the batch.
 ## What's in it
 
 - `server.py`: API, sign-in (hashed passwords, signed session cookie), roles, the load runner
-- `dashboards.py`: the 10 dashboards as metrics over the raw rows (`ub.v_lines`), with customer
-  and connection roll-ups (bill size, rank, change since the previous period) built per request
+- `dashboards.py`: the 10 dashboards as metrics over the built lines (`ub.fact_lines`), with
+  customer and connection roll-ups (bill size, rank, change since the previous period)
+- `review.py`: the review workflow: rows with pending edits, edit / add / delete / undo, the log
 - `roles.py`: roles, their pages and utilities, and the default users
 - `static/`: the front end (HTML, CSS, SVG charts). It has no external libraries, so it works on a
   network without internet access.

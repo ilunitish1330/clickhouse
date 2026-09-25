@@ -2,7 +2,7 @@
 (function () {
   const { render, fmt, esc, CURRENCY } = window.PUCCharts;
   const app = document.getElementById("app");
-  const state = { me: null, filters: { period: "", region: 0, utility: 0, sector: "", tariff: "", compare: "" }, tableView: {}, lastPage: null };
+  const state = { me: null, filters: { period: "", pfrom: "", pto: "", region: 0, utility: 0, sector: "", tariff: "", compare: "" }, tableView: {}, lastPage: null };
   const routeId = () => location.hash.replace(/^#\//, "").split("?")[0];
   const icon = (id, cls = "i") => `<svg class="${cls}"><use href="#i-${id}"/></svg>`;
 
@@ -55,7 +55,7 @@
   function shell(active) {
     const me = state.me;
     const nav = me.pages.map((p) => `<a href="#/${p.id}" class="${active === p.id ? "active" : ""}">${icon(p.icon)}${esc(p.title)}</a>`).join("");
-    const data = me.can_load ? `<div class="nav-group">Data</div><a href="#/load" class="${active === "load" ? "active" : ""}">${icon("upload")}Data Load</a>` : "";
+    const data = me.can_load || me.can_review ? `<div class="nav-group">Data</div>${me.can_load ? `<a href="#/load" class="${active === "load" ? "active" : ""}">${icon("upload")}Data Load</a>` : ""}${me.can_review ? `<a href="#/review" class="${active === "review" ? "active" : ""}">${icon("edit")}Data Review</a>` : ""}` : "";
     const admin = me.can_admin ? `<div class="nav-group">Admin</div><a href="#/users" class="${active === "users" ? "active" : ""}">${icon("users")}Users &amp; roles</a>` : "";
     app.innerHTML = `
     <div class="shell">
@@ -104,8 +104,13 @@
   function filterBar(page) {
     const f = state.me.filters, s = state.filters;
     const opt = (v, label, cur) => `<option value="${esc(String(v))}" ${String(cur) === String(v) ? "selected" : ""}>${esc(label)}</option>`;
-    const periods = opt("", "All periods", s.period) + f.periods.slice().reverse().map((p) => opt(p.period, p.period_label, s.period)).join("");
+    // one month, every period combined, or a from-to range
+    const cur = s.pfrom ? "range" : s.period;
+    const periods = opt("", "All periods (combined)", cur) + f.periods.slice().reverse().map((p) => opt(p.period, p.period_label, cur)).join("")
+      + (f.periods.length > 1 ? opt("range", "Range from – to…", cur) : "");
     const field = (id, label, inner, extra = "") => `<div class="sep"></div><label ${extra}>${label}<select id="${id}">${inner}</select></label>`;
+    const range = s.pfrom ? field("f-pfrom", "From", f.periods.map((p) => opt(p.period, p.period_label, s.pfrom)).join(""))
+      + field("f-pto", "To", f.periods.map((p) => opt(p.period, p.period_label, s.pto)).join("")) : "";
     const others = f.periods.filter((p) => p.period !== s.period);
     const compare = s.period && others.length ? field("f-compare", "Compare with",
       opt("", "Previous period", s.compare) + others.slice().reverse().map((p) => opt(p.period, p.period_label, s.compare)).join("") + opt("none", "No comparison", s.compare)) : "";
@@ -122,7 +127,7 @@
     const tariffOpts = narrowed ? f.tariffs.filter((t) => t.utilities.map(Number).includes(shown[0])).map((t) => opt(t.name, t.name, tariffApplies(page) ? s.tariff : "")).join("") : groups;
     const tariffs = field("f-tariff", narrowed ? `Tariff group · ${UTIL_NAMES[shown[0]]}` : "Tariff group",
       opt("", narrowed ? `All ${UTIL_NAMES[shown[0]].toLowerCase()} tariffs` : "All tariff groups", "") + tariffOpts, `class="wide-sel"`);
-    return `<div class="filters" id="filters"><label>Period<select id="f-period">${periods}</select></label>${compare}${regions}${utils}${sectors}${tariffs}</div>`;
+    return `<div class="filters" id="filters"><label>Period<select id="f-period">${periods}</select></label>${range}${compare}${regions}${utils}${sectors}${tariffs}</div>`;
   }
 
   // the filters in effect, as removable chips
@@ -156,6 +161,14 @@
     s.sector = f.sectors.includes(q.get("sector")) ? q.get("sector") : "";
     s.tariff = tariffInfo(q.get("tariff")) ? q.get("tariff") : "";
     s.compare = q.get("compare") === "none" || f.periods.some((p) => p.period === q.get("compare")) ? q.get("compare") : "";
+    const known = (v) => f.periods.some((p) => p.period === v);
+    if (known(q.get("pfrom")) && known(q.get("pto"))) { s.pfrom = q.get("pfrom"); s.pto = q.get("pto"); s.period = ""; }
+  }
+  // "Jun 2025 – Jan 2026", "Jan 2026" or "All periods"
+  function periodLabel() {
+    const s = state.filters;
+    if (s.pfrom) { const [a, b] = [s.pfrom, s.pto].sort(); return a === b ? periodText(a) : `${periodText(a)} – ${periodText(b)}`; }
+    return s.period ? periodText(s.period) : "All periods";
   }
 
   function scopeChips(page) {
@@ -219,7 +232,6 @@
     const page = state.me.pages.find((p) => p.id === pageId);
     if (!page) return notAllowed();
     const main = shell(pageId);
-    const periodLabel = () => (state.me.filters.periods.find((p) => p.period === state.filters.period) || {}).period_label || "All periods";
     const accent = { 1: "elec", 2: "sewer", 3: "water" }[page.utility] || "brand";
     const ps = state.me.filters.periods;
     const coverage = ps.length ? `${icon("check")} Data: ${esc(ps[0].period_label)}${ps.length > 1 ? " – " + esc(ps[ps.length - 1].period_label) : ""}` : "";
@@ -245,7 +257,16 @@
     function onChange(e) {
       const s = state.filters, v = e.target.value;
       switch (e.target.id) {
-        case "f-period": s.period = v; s.compare = ""; break;  // a comparison belongs to the period it was picked for
+        case "f-period":  // a comparison belongs to the period it was picked for
+          s.compare = "";
+          if (v === "range") {
+            const ps = state.me.filters.periods;
+            s.pfrom = ps[0].period; s.pto = s.period || ps[ps.length - 1].period; s.period = "";
+            if (s.pfrom === s.pto) s.pto = ps[ps.length - 1].period;
+          } else { s.period = v; s.pfrom = s.pto = ""; }
+          break;
+        case "f-pfrom": s.pfrom = v; break;
+        case "f-pto": s.pto = v; break;
         case "f-compare": s.compare = v; break;
         case "f-region": s.region = +v; break;
         case "f-utility":  // a tariff group of another utility no longer fits: drop it
@@ -263,7 +284,7 @@
       const { key, value } = e.detail, s = state.filters;
       const val = key === "region" || key === "utility" ? +value : value;
       s[key] = String(s[key]) === String(val) ? (typeof s[key] === "number" ? 0 : "") : val;
-      if (key === "period") s.compare = "";
+      if (key === "period") { s.compare = ""; s.pfrom = s.pto = ""; }
       refresh();
     });
     drawFilters();
@@ -274,30 +295,32 @@
       const s = state.filters;
       writeUrl(pageId);
       const qs = new URLSearchParams({ period: s.period, region: s.region, utility: page.utility ? 0 : s.utility, sector: s.sector,
-                                       tariff: tariffApplies(page) ? s.tariff : "", compare: s.period ? s.compare : "" });
+                                       tariff: tariffApplies(page) ? s.tariff : "", compare: s.period ? s.compare : "",
+                                       pfrom: s.pfrom, pto: s.pto });
       let d;
       try { d = await api(`/api/page/${pageId}?${qs}`); }
       catch (err) { dash.innerHTML = `<div class="note">${icon("x")} ${esc(err.message)}</div>`; dash.classList.remove("loading"); return; }
       if (d.empty) return noData(dash);
       main.querySelector("#subtitle").textContent = `${d.subtitle} · ${periodLabel()}`;
-      const b = d.built, chip = main.querySelector("#built");
-      if (b && chip) {  // how this page was made: raw rows read and aggregated just now, or reused
-        const secs = b.ms >= 1000 ? `${(b.ms / 1000).toFixed(1)} s` : `${b.ms} ms`;
-        const fresh = b.queries - b.from_cache;
+      // review status of the data on screen: Final once reviewed, Draft until then
+      const chip = main.querySelector("#built"), rv = d.review || [];
+      if (chip && rv.length) {
+        const drafts = rv.filter((r) => r.status !== "final");
         chip.hidden = false;
-        chip.innerHTML = fresh ? `${icon("pulse")} Aggregated from ${b.raw_rows_read.toLocaleString()} raw rows · ${secs}`
-                               : `${icon("pulse")} Reused, aggregated earlier from raw rows · ${secs}`;
-        chip.title = `${b.queries} queries, ${fresh} run on the raw rows just now, ${b.from_cache} reused from memory until the data changes`;
+        chip.className = `chip status-chip ${drafts.length ? "draft" : "final"}`;
+        chip.innerHTML = drafts.length
+          ? `${icon("pulse")} Draft · ${drafts.length === rv.length ? "awaiting review" : `${drafts.map((r) => r.periods.join(", ")).join(", ")} awaiting review`}`
+          : `${icon("check")} Final · reviewed`;
+        chip.title = rv.map((r) => `${r.periods.join(", ")}: ${r.status === "final" ? "Final" : "Draft"}, revision ${r.revision}${r.by ? `, last change by ${r.by} on ${r.at.slice(0, 16)}` : ""}`).join("\n")
+          + (d.built ? `\n${d.built.queries} queries, ${d.built.rows_read.toLocaleString()} rows read, ${d.built.ms} ms` : "");
       }
-      const pickedOf = { region: s.region || "", utility: s.utility || "", sector: s.sector, tariff: tariffApplies(page) ? s.tariff : "", period: s.period };
-      d.charts.forEach((c) => { if (c.filter_key) c.picked = pickedOf[c.filter_key]; });
       const slots = d.tiles.length + (d.tiles[0] && d.tiles[0].value !== null ? 1 : 0);  // the headline tile is two wide
       const cols = slots > 6 ? Math.ceil(slots / 2) : slots;  // too many for one row: two rows
       const fill = slots > 6 ? cols * 2 - slots : 0;  // the last tile stretches over any gap
       dash.innerHTML = `<div class="tiles${fill ? " fill" : ""}" style="--cols:${cols};--fill:${fill + 1}">${d.tiles.map((t, i) => tileHtml(t, i)).join("")}</div>
         <div class="grid">${d.charts.map((c, i) => `
           <section class="card ${c.wide || c.kind === "table" && c.metrics.length > 3 ? "wide" : ""}">
-            <div class="card-head"><div><h3>${esc(c.title)}${c.filter_key ? `<span class="pk-dot" title="Click a bar to filter the page"></span>` : ""}</h3><div class="meta">${c.all_periods ? "All periods" : esc(periodLabel())}${c.unit && c.metrics.some((m) => m.fmt === "qty") ? " · " + esc(c.unit) : ""}${c.metrics.some((m) => m.fmt === "money") ? " · " + CURRENCY : ""}</div></div>
+            <div class="card-head"><div><h3>${esc(c.title)}${c.filter_key ? `<span class="pk-dot" title="Click a bar to filter the page"></span>` : ""}</h3><div class="meta">${c.all_periods ? (s.pfrom ? esc(periodLabel()) : "All periods") : esc(periodLabel())}${c.unit && c.metrics.some((m) => m.fmt === "qty") ? " · " + esc(c.unit) : ""}${c.metrics.some((m) => m.fmt === "money") ? " · " + CURRENCY : ""}</div></div>
             ${c.kind !== "table" && !c.note ? `<button class="btn small ghost" data-toggle="${i}" aria-label="Switch between chart and table">${icon(state.tableView[pageId + i] ? "chart" : "table")}${state.tableView[pageId + i] ? "Chart" : "Table"}</button>` : ""}</div>
             ${insight(c) ? `<div class="insight">${icon("spark")}<span>${insight(c)}</span></div>` : ""}
             <div class="card-body" id="c${i}"></div></section>`).join("")}</div>`;
@@ -372,9 +395,9 @@
   }
 
   async function bgRebuild() {
-    Object.assign(bg, { phase: "upload", name: "Power BI tables", upPct: 100, job: null, j: null, error: "" });
+    Object.assign(bg, { phase: "upload", name: "Rebuild aggregates", upPct: 100, job: null, j: null, error: "" });
     bgChanged();
-    try { const { job } = await api("/api/rebuild", { method: "POST" }); bgWatch(job, "Power BI tables"); }
+    try { const { job } = await api("/api/rebuild", { method: "POST" }); bgWatch(job, "Rebuild aggregates"); }
     catch (err) { bgFail(err.message); }
   }
 
@@ -386,7 +409,7 @@
     clearInterval(bgTimer);
     bgTimer = setInterval(async () => {
       let j; try { j = await api(`/api/load/${job}`); } catch (e) { return; }
-      bg.j = j; bg.name = j.file === "(Power BI tables)" ? "Power BI tables" : j.file;
+      bg.j = j; bg.name = j.file;
       if (j.status !== "running") {
         clearInterval(bgTimer); bgTimer = null; bg.phase = j.status;
         if (j.status === "done") setTimeout(() => { if (bg.phase === "done" && bg.job === job) { bg.phase = null; renderBg(); } }, 20000);
@@ -394,7 +417,7 @@
           try { state.me = await api("/api/me"); } catch (e) {}
           const ps = state.me?.filters.periods || []; if (!state.filters.period && ps.length) state.filters.period = ps[ps.length - 1].period;
         }
-        if (routeId() !== "load") toast(j.status === "done" ? `${icon("check")}<span><b>${esc(bg.name)}</b> is loaded. The dashboards now show it.</span>`
+        if (routeId() !== "load") toast(j.status === "done" ? `${icon("check")}<span><b>${esc(bg.name)}</b> is done. The aggregates and dashboards are rebuilt.</span>`
                                                                    : `${icon("x")}<span><b>${esc(bg.name)}</b> failed. See Data Load for the log.</span>`, j.status === "done" ? "good" : "bad");
       }
       bgChanged();
@@ -414,7 +437,7 @@
     const main = shell("load");
     const run = state.me.can_run;
     main.innerHTML = mobileTop("Data Load") + `
-      <div class="topbar"><div><h1>Data Load</h1><p class="subtitle">${run ? "Upload a Statistic Report export and press Run: its rows are stored in ClickHouse as they are. Each dashboard reads and aggregates the raw rows it needs when it is opened." : "What has been loaded, and when."}</p></div></div>
+      <div class="topbar"><div><h1>Data Load</h1><p class="subtitle">${run ? "Upload a Statistic Report export and press Run: its rows are stored in ClickHouse, the aggregates and dashboards are built, and the data goes live as a Draft until a reviewer marks it reviewed." : "What has been loaded, and when."}</p></div></div>
       <div class="panels">
         ${run ? `<section class="card">
           <div class="card-head"><div><h3>Load a billing export</h3><div class="meta">.xlsx, .csv, .tsv, .txt, or a .zip of them</div></div><span id="job-status"></span></div>
@@ -424,12 +447,12 @@
           <div class="steps" id="steps">
             <div class="step" data-s="0"><b>Upload</b>File to the server</div>
             <div class="step" data-s="1"><b>Read</b>Rows out of the file</div>
-            <div class="step" data-s="2"><b>Store</b>Raw rows in ClickHouse</div>
-            <div class="step" data-s="3"><b>Check</b>Rows and amounts match</div>
+            <div class="step" data-s="2"><b>Store</b>Rows in ClickHouse, checked</div>
+            <div class="step" data-s="3"><b>Build</b>Aggregates and dashboards</div>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px">
             <button class="btn primary" id="run" disabled>${icon("pulse")}Run</button>
-            <button class="btn" id="rebuild" title="Only needed before a Power BI refresh: the dashboards here aggregate the raw rows themselves">Build Power BI tables</button>
+            <button class="btn" id="rebuild" title="Rebuild every period's aggregates and dashboards from the stored rows">Rebuild aggregates</button>
           </div>
           <div class="eta" id="eta" hidden><div class="eta-row"><span id="eta-text"></span><span id="eta-left"></span></div><div class="eta-track"><div class="eta-bar" id="eta-bar"></div></div></div>
           <div class="console" id="console" hidden></div>
@@ -492,7 +515,7 @@
       status(busy ? "running" : bg.phase);
       if (bg.phase === "upload") {
         setSteps(0);
-        showConsole(bg.name === "Power BI tables" ? "Building the Power BI tables…" : `Uploading ${bg.name} (${(bg.size / 1e6).toFixed(1)} MB) · ${Math.round(bg.upPct)}%\nYou can open other pages meanwhile; the load carries on.`);
+        showConsole(bg.phase === "upload" && !bg.size ? `Starting: ${bg.name}…` : `Uploading ${bg.name} (${(bg.size / 1e6).toFixed(1)} MB) · ${Math.round(bg.upPct)}%\nYou can open other pages meanwhile; the load carries on.`);
         const box = main.querySelector("#eta"); box.hidden = false;
         main.querySelector("#eta-bar").style.width = bg.upPct + "%"; main.querySelector("#eta-bar").classList.remove("failed");
         main.querySelector("#eta-text").textContent = "Uploading the file"; main.querySelector("#eta-left").textContent = `${Math.round(bg.upPct)}%`;
@@ -504,23 +527,229 @@
         if (j.status === "done") c.textContent += "\n\nDone. The dashboards now show this data.";
         c.scrollTop = c.scrollHeight;
         showEta(j);
-        setSteps(/raw rows stored|Power BI tables built/.test(text) ? 4 : /rows read, .* stored/.test(text) ? 3 : /rows staged/.test(text) ? 2 : 1, j.status === "done");
+        setSteps(/aggregates and dashboards built/.test(text) ? 4 : /building the dashboard tables|rows read, .* stored/.test(text) ? 3 : /rows staged/.test(text) ? 2 : 1, j.status === "done");
       } else { showConsole("Starting…"); setSteps(1); }
       if (lastPhase === "running" && !busy) refreshTables();
       lastPhase = bg.phase;
     }
     async function refreshTables() {
       const d = await api("/api/loads");
-      main.querySelector("#batches").innerHTML = d.batches.length ? `<div class="tbl-wrap"><table class="data"><thead><tr><th>Period</th><th class="n">Billing lines</th><th class="n">Invoices</th><th class="n">Amount (${CURRENCY})</th></tr></thead><tbody>${d.batches.map((b) => `<tr><td>${esc(fmtPeriod(b.period))}</td><td class="n">${(+b.lines).toLocaleString()}</td><td class="n">${(+b.invoices).toLocaleString()}</td><td class="n">${Math.round(b.amount).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">Nothing loaded yet.</div>`;
+      main.querySelector("#batches").innerHTML = d.batches.length ? `<div class="tbl-wrap"><table class="data"><thead><tr><th>Period</th><th>Status</th><th class="n">Billing lines</th><th class="n">Invoices</th><th class="n">Amount (${CURRENCY})</th></tr></thead><tbody>${d.batches.map((b) => `<tr><td>${esc(fmtPeriod(b.period))}</td><td>${statusPill(b.status, b.revision)}</td><td class="n">${(+b.lines).toLocaleString()}</td><td class="n">${(+b.invoices).toLocaleString()}</td><td class="n">${Math.round(b.amount).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">Nothing loaded yet.</div>`;
       main.querySelector("#history").innerHTML = d.history.length ? `<div class="tbl-wrap scroll-y"><table class="data"><thead><tr><th>When</th><th>File</th><th class="n">Rows</th><th class="n">Amount</th></tr></thead><tbody>${d.history.map((h) => `<tr><td class="num">${esc(h.loaded_at)}</td><td>${esc(h.file_name)}</td><td class="n">${(+h.rows).toLocaleString()}</td><td class="n">${Math.round(h.amount).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">No loads recorded.</div>`;
       if (d.running && !bgTimer) bgWatch(d.running.id, d.running.file);  // e.g. started by another operator
     }
     bgListener = reflect; reflect();
     await refreshTables();
   }
+  // Draft (not reviewed yet) or Final (reviewed), with its revision
+  const statusPill = (status, revision) => status === "final"
+    ? `<span class="spill final">${icon("check")}Final${+revision > 1 ? ` · rev ${revision}` : ""}</span>`
+    : `<span class="spill draft">${icon("pulse")}Draft${+revision > 1 ? ` · rev ${revision}` : ""}</span>`;
   const fmtPeriod = (p) => new Date(p + "T00:00:00").toLocaleDateString(undefined, { month: "short", year: "numeric" });
 
   // ------------------------------------------------------------------ users
+  // ------------------------------------------------------------------ data review
+  // Uploads go live as a Draft. A reviewer edits rows here (the edits wait, not on the dashboards),
+  // "Finalize modified data" writes them and rebuilds the aggregates and dashboards, and
+  // "Mark as reviewed" makes the batch Final. Editing a Final batch starts the next revision.
+  const rv = { batch: null, search: "", changed: false, page: 1, utility: 0, region: 0, all: false, tab: "rows", cols: null, job: null };
+  async function reviewPage() {
+    if (!state.me.can_review) return notAllowed();
+    const main = shell("review");
+    main.innerHTML = mobileTop("Data Review") + `
+      <div class="topbar"><div><h1>Data Review</h1><p class="subtitle">Uploads go live as a <b>Draft</b>. Check the dashboards and the rows, edit rows here if needed, press <b>Finalize modified data</b> to rebuild the aggregates and dashboards, then <b>Mark as reviewed</b> to make the data Final.</p></div></div>
+      <div class="rv-batches" id="rv-batches"><div class="skeleton"></div></div>
+      <section class="card wide rv-panel" id="rv-panel" hidden></section>`;
+    try { if (!rv.cols) rv.cols = await api("/api/review/columns"); } catch (e) { return; }
+    const L = (c) => rv.cols.labels[c] || c;
+    let batches = [];
+
+    async function loadBatches() {
+      const d = await api("/api/review/batches");
+      batches = d.batches;
+      if (!batches.length) { main.querySelector("#rv-batches").innerHTML = `<div class="note">Nothing uploaded yet.</div>`; return; }
+      if (!batches.some((b) => b.batch_id === rv.batch)) rv.batch = batches[0].batch_id;
+      main.querySelector("#rv-batches").innerHTML = batches.map((b) => `
+        <button class="rv-card ${b.batch_id === rv.batch ? "on" : ""}" data-batch="${esc(b.batch_id)}">
+          <span class="rv-period">${esc(b.period ? fmtPeriod(b.period) : "—")}</span>
+          ${statusPill(b.status, b.revision)}
+          <small>${(+b.lines).toLocaleString()} rows · ${CURRENCY} ${Math.round(b.amount).toLocaleString()}</small>
+          ${+b.pending ? `<span class="rv-pending">${icon("edit")}${b.pending} pending edit${+b.pending > 1 ? "s" : ""}</span>` : `<small class="muted">${esc(b.file_name)}</small>`}
+        </button>`).join("");
+      main.querySelectorAll("[data-batch]").forEach((el) => el.onclick = () => {
+        if (rv.batch === el.dataset.batch) return;
+        Object.assign(rv, { batch: el.dataset.batch, page: 1, search: "", changed: false, tab: "rows" });
+        loadBatches().then(panel);
+      });
+    }
+    const cur = () => batches.find((b) => b.batch_id === rv.batch);
+
+    function panel() {
+      const b = cur(), el = main.querySelector("#rv-panel"); if (!b) return;
+      el.hidden = false;
+      const pending = +b.pending, final = b.status === "final", busy = bgBusy();
+      const step = (n, label, state) => `<div class="rv-step ${state}"><span>${state === "done" ? icon("check") : n}</span>${label}</div>`;
+      const flow = [
+        step(1, "Uploaded, aggregates built", "done"),
+        step(2, pending ? `${pending} edit${pending > 1 ? "s" : ""} waiting` : "Edit rows if needed", pending ? "now" : final ? "done" : "now"),
+        step(3, "Finalize: rebuild dashboards", pending ? "next" : +b.revision > 1 || final ? "done" : "skip"),
+        step(4, final && !pending ? "Reviewed: Final" : "Mark as reviewed", pending ? "wait" : final ? "done" : "next"),
+      ].join(`<i class="rv-arrow"></i>`);
+      const msg = busy && bg.job === rv.job ? `${icon("pulse")} Finalizing: writing the edits and rebuilding the aggregates and dashboards…`
+        : pending ? `${icon("edit")} ${pending} edited row${pending > 1 ? "s are" : " is"} not on the dashboards yet. Finalize to rebuild the aggregates and dashboards with ${pending > 1 ? "them" : "it"}.`
+        : final ? `${icon("check")} Reviewed by <b>${esc(b.changed_by)}</b> on ${esc(b.last_change.slice(0, 16))}. Editing a row starts revision ${+b.revision + 1}, which needs reviewing again.`
+        : `${icon("spark")} Check the <a href="#/${state.me.pages[0]?.id || "executive"}?period=${esc(b.period)}">dashboards for ${esc(fmtPeriod(b.period))}</a> and the rows below. Edit if needed, then mark the data reviewed.`;
+      el.innerHTML = `
+        <div class="rv-head"><div><h2>${esc(fmtPeriod(b.period))} ${statusPill(b.status, b.revision)}</h2>
+          <div class="meta">${esc(b.file_name)} · ${(+b.lines).toLocaleString()} rows on the dashboards · ${CURRENCY} ${Math.round(b.amount).toLocaleString()} · revision ${b.revision}${b.changed_by ? ` · last change by ${esc(b.changed_by)}, ${esc(b.last_change.slice(0, 16))}` : ""}</div></div>
+          <a class="btn small" href="#/${state.me.pages[0]?.id || "executive"}?period=${esc(b.period)}">${icon("chart")}Open dashboards</a></div>
+        <div class="rv-flow">${flow}</div>
+        <div class="rv-bar ${pending ? "pending" : final ? "final" : "draft"}"><p>${msg}</p><div class="rv-btns">
+          ${pending ? `<button class="btn" id="rv-discard" ${busy ? "disabled" : ""}>${icon("undo")}Discard edits</button>
+                       <button class="btn primary" id="rv-finalize" ${busy ? "disabled" : ""}>${icon("pulse")}Finalize modified data</button>` : ""}
+          ${!final ? `<button class="btn ${pending ? "" : "primary"}" id="rv-reviewed" ${pending || busy ? "disabled" : ""} title="${pending ? "Finalize or discard the pending edits first" : "Make this data Final"}">${icon("check")}Mark as reviewed</button>` : ""}
+        </div></div>
+        <div class="tabs"><button class="${rv.tab === "rows" ? "on" : ""}" data-tab="rows">${icon("table")}Rows</button><button class="${rv.tab === "history" ? "on" : ""}" data-tab="history">${icon("undo")}Change history</button></div>
+        <div id="rv-body"></div>`;
+      el.querySelectorAll("[data-tab]").forEach((t) => t.onclick = () => { rv.tab = t.dataset.tab; panel(); });
+      el.querySelector("#rv-discard")?.addEventListener("click", async () => {
+        if (!confirm(`Discard all ${pending} pending edit(s) of ${fmtPeriod(b.period)}?`)) return;
+        await act(`/api/review/${encodeURIComponent(b.batch_id)}/discard`, {}); refresh();
+      });
+      el.querySelector("#rv-finalize")?.addEventListener("click", async () => {
+        try {
+          const { job } = await api(`/api/review/${encodeURIComponent(b.batch_id)}/finalize`, { method: "POST" });
+          rv.job = job; bgWatch(job, `Finalize ${fmtPeriod(b.period)}`); panel();
+        } catch (err) { toast(`${icon("x")}<span>${esc(err.message)}</span>`, "bad"); }
+      });
+      el.querySelector("#rv-reviewed")?.addEventListener("click", async () => {
+        if (await act(`/api/review/${encodeURIComponent(b.batch_id)}/reviewed`, {})) {
+          toast(`${icon("check")}<span><b>${esc(fmtPeriod(b.period))}</b> is reviewed and Final.</span>`, "good"); refresh();
+        }
+      });
+      rv.tab === "rows" ? rowsView() : historyView();
+    }
+
+    async function act(url, body) {
+      try { await api(url, { method: "POST", body: JSON.stringify(body) }); return true; }
+      catch (err) { toast(`${icon("x")}<span>${esc(err.message)}</span>`, "bad"); return false; }
+    }
+    async function refresh() { await loadBatches(); panel(); }
+
+    function rowsView() {
+      const body = main.querySelector("#rv-body"), b = cur();
+      const opt = (v, label, c) => `<option value="${v}" ${String(c) === String(v) ? "selected" : ""}>${esc(label)}</option>`;
+      body.innerHTML = `
+        <div class="rv-tools">
+          <label class="rv-search">${icon("search")}<input id="rv-q" placeholder="Search customer, connection, invoice, meter or tariff" value="${esc(rv.search)}"></label>
+          <select id="rv-util">${opt(0, "All utilities", rv.utility)}${opt(1, "Electricity", rv.utility)}${opt(3, "Water", rv.utility)}${opt(2, "Sewerage", rv.utility)}</select>
+          <select id="rv-reg">${opt(0, "All islands", rv.region)}${opt(1, "Mahe", rv.region)}${opt(2, "Praslin", rv.region)}${opt(3, "La Digue", rv.region)}</select>
+          <label class="rv-check"><input type="checkbox" id="rv-changed" ${rv.changed ? "checked" : ""}> Edited rows only</label>
+          <label class="rv-check"><input type="checkbox" id="rv-all" ${rv.all ? "checked" : ""}> All columns</label>
+          <button class="btn small primary" id="rv-add" ${bgBusy() ? "disabled" : ""}>${icon("plus")}Add row</button>
+        </div>
+        <div id="rv-grid"><div class="skeleton"></div></div>`;
+      let t;
+      body.querySelector("#rv-q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { rv.search = e.target.value; rv.page = 1; grid(); }, 350); });
+      body.querySelector("#rv-util").onchange = (e) => { rv.utility = +e.target.value; rv.page = 1; grid(); };
+      body.querySelector("#rv-reg").onchange = (e) => { rv.region = +e.target.value; rv.page = 1; grid(); };
+      body.querySelector("#rv-changed").onchange = (e) => { rv.changed = e.target.checked; rv.page = 1; grid(); };
+      body.querySelector("#rv-all").onchange = (e) => { rv.all = e.target.checked; grid(); };
+      body.querySelector("#rv-add").onclick = () => addRowModal(b);
+      grid();
+    }
+
+    async function grid() {
+      const box = main.querySelector("#rv-grid"), b = cur(); if (!box) return;
+      const qs = new URLSearchParams({ search: rv.search, changed: rv.changed ? 1 : 0, page: rv.page, size: 50, utility: rv.utility, region: rv.region });
+      let d; try { d = await api(`/api/review/${encodeURIComponent(b.batch_id)}/rows?${qs}`); }
+      catch (err) { box.innerHTML = `<div class="note">${esc(err.message)}</div>`; return; }
+      const cols = rv.all ? rv.cols.editable : rv.cols.default, busy = bgBusy();
+      const widths = Object.fromEntries(cols.map((c) => [c, Math.min(40, Math.max(4, L(c).length, ...d.rows.map((r) => (r.values[c] || "").length)) + 1)]));
+      const from = d.total ? (d.page - 1) * d.size + 1 : 0, to = Math.min(d.total, d.page * d.size);
+      box.innerHTML = `
+        <div class="tbl-wrap rv-grid"><table class="data rvtable"><thead><tr><th class="n">Line</th>${cols.map((c) => `<th class="${rv.cols.number.includes(c) ? "n" : ""}">${esc(L(c))}</th>`).join("")}<th></th></tr></thead><tbody>
+        ${d.rows.map((r) => {
+          const del = r.pending === "delete";
+          return `<tr class="${r.pending ? "p-" + r.pending : ""}" data-line="${r.line_no}">
+            <td class="n num">${r.pending === "insert" ? `<span class="tag new">New</span>` : r.pending === "delete" ? `<span class="tag del">Deleted</span>` : r.pending ? `<span class="tag chg">Edited</span>` : ""}${r.line_no}</td>
+            ${cols.map((c) => {
+              const was = r.changed[c];
+              // each cell as wide as its column's longest value on this page
+              return `<td class="${was !== undefined ? "chg" : ""}"><input class="cell ${rv.cols.number.includes(c) ? "n" : ""}" data-col="${c}" value="${esc(r.values[c])}" size="${widths[c]}" ${del || busy ? "disabled" : ""}
+                aria-label="${esc(L(c))}, line ${r.line_no}" ${was !== undefined ? `title="Was: ${esc(was || "(empty)")}"` : ""}></td>`;
+            }).join("")}
+            <td class="n">${r.pending ? `<button class="btn small ghost" data-undo="${r.line_no}" title="Undo the pending change to this row" ${busy ? "disabled" : ""}>${icon("undo")}</button>`
+                                      : `<button class="btn small ghost" data-del="${r.line_no}" title="Delete this row" ${busy ? "disabled" : ""}>${icon("trash")}</button>`}</td></tr>`;
+        }).join("")}
+        </tbody></table></div>
+        <div class="rv-pager"><span>${d.total ? `Rows ${from.toLocaleString()}–${to.toLocaleString()} of ${d.total.toLocaleString()}` : "No rows match"}${rv.changed || rv.search || rv.utility || rv.region ? " (filtered)" : ""} · edited rows first</span>
+          <span><button class="btn small" id="rv-prev" ${d.page <= 1 ? "disabled" : ""}>Previous</button>
+          <button class="btn small" id="rv-next" ${to >= d.total ? "disabled" : ""}>Next</button></span></div>`;
+      box.querySelector("#rv-prev").onclick = () => { rv.page--; grid(); };
+      box.querySelector("#rv-next").onclick = () => { rv.page++; grid(); };
+      box.querySelectorAll("input.cell").forEach((inp) => {
+        inp.dataset.orig = inp.value;
+        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.blur(); if (e.key === "Escape") { inp.value = inp.dataset.orig; inp.blur(); } });
+        inp.addEventListener("change", async () => {
+          const line = +inp.closest("tr").dataset.line;
+          inp.classList.add("saving");
+          const ok = await act(`/api/review/${encodeURIComponent(b.batch_id)}/edit`, { line_no: line, changes: { [inp.dataset.col]: inp.value } });
+          if (!ok) { inp.value = inp.dataset.orig; inp.classList.remove("saving"); return; }
+          await loadBatches(); panel();
+        });
+      });
+      box.querySelectorAll("[data-del]").forEach((btn) => btn.onclick = async () => {
+        if (await act(`/api/review/${encodeURIComponent(b.batch_id)}/delete`, { line_no: +btn.dataset.del })) { await loadBatches(); panel(); }
+      });
+      box.querySelectorAll("[data-undo]").forEach((btn) => btn.onclick = async () => {
+        if (await act(`/api/review/${encodeURIComponent(b.batch_id)}/undo`, { line_no: +btn.dataset.undo })) { await loadBatches(); panel(); }
+      });
+    }
+
+    async function historyView() {
+      const body = main.querySelector("#rv-body"), b = cur();
+      const d = await api(`/api/review/${encodeURIComponent(b.batch_id)}/history`);
+      const what = { update: "Edited", insert: "Added row", delete: "Deleted row", undo: "Undid change", discard: "Discarded edits", finalize: "Finalized", reviewed: "Marked reviewed" };
+      body.innerHTML = d.history.length ? `<div class="tbl-wrap scroll-y"><table class="data"><thead><tr><th>When</th><th>Who</th><th>What</th><th class="n">Line</th><th>Field</th><th>Before</th><th>After</th><th class="n">Revision</th></tr></thead><tbody>
+        ${d.history.map((h) => `<tr><td class="num">${esc(h.ts.slice(0, 19))}</td><td>${esc(h.user)}</td><td>${esc(what[h.action] || h.action)}</td><td class="n">${+h.line_no || ""}</td>
+          <td>${esc(h.column ? L(h.column) : "")}</td><td class="muted">${esc(h.old_value)}</td><td>${esc(h.new_value)}</td><td class="n">${h.revision}</td></tr>`).join("")}
+        </tbody></table></div>` : `<div class="note">No changes yet: this is the data as uploaded.</div>`;
+    }
+
+    function addRowModal(b) {
+      const f = (c, extra = "") => `<label class="field"><span>${esc(L(c))}</span><input name="${c}" ${extra}></label>`;
+      const sel = (c, opts) => `<label class="field"><span>${esc(L(c))}</span><select name="${c}">${opts.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join("")}</select></label>`;
+      modal(`<h2>Add a row to ${esc(fmtPeriod(b.period))}</h2><p class="sub">The labels for the utility, island and tariff code are filled in from rows that already use them. The row waits with the other edits until you finalize.</p>
+        <form id="rf"><div id="rerr"></div><div class="rv-form">
+        ${sel("UTILITYTYPE", [["1", "1 Electricity"], ["3", "3 Water"], ["2", "2 Sewerage"]])}
+        ${sel("REGION", [["1", "1 Mahe"], ["2", "2 Praslin"], ["3", "3 La Digue"]])}
+        ${f("CUSTID", "required")}${f("CONNECTIONID")}${f("INVOICEID")}${f("TARIFFGROUPCODE", 'placeholder="e.g. EMD1"')}
+        ${sel("ADDITIONALITEMSTYPE", [["1", "1 Consumption"], ["2", "2 Adjustment"], ["3", "3 Fixed charge"], ["4", "4 Other"]])}
+        ${f("ADDITIONALITEMSDESCRIPTION", 'placeholder="e.g. Consumption"')}
+        ${f("QUANTITY", 'required inputmode="decimal" placeholder="0"')}${f("AMOUNT", 'required inputmode="decimal" placeholder="0.00"')}
+        </div><div class="actions"><button type="button" class="btn" id="rcancel">Cancel</button><button class="btn primary">${icon("plus")}Add row</button></div></form>`,
+      (m, close) => {
+        m.querySelector("#rcancel").onclick = close;
+        m.querySelector("#rf").onsubmit = async (e) => {
+          e.preventDefault();
+          const values = Object.fromEntries([...new FormData(e.target)].filter(([, v]) => v !== ""));
+          try { await api(`/api/review/${encodeURIComponent(b.batch_id)}/add`, { method: "POST", body: JSON.stringify({ values }) }); }
+          catch (err) { m.querySelector("#rerr").innerHTML = `<div class="error">${esc(err.message)}</div>`; return; }
+          close(); rv.changed = true; rv.page = 1; await loadBatches(); panel();
+        };
+      });
+    }
+
+    // a finalize running in the background: redraw when it finishes
+    bgListener = () => {
+      if (!main.isConnected) { bgListener = null; return; }
+      if (rv.job && bg.job === rv.job && !bgBusy()) { rv.job = null; refresh(); }
+    };
+    if (bgBusy() && bg.name.startsWith("Finalize")) rv.job = bg.job;
+    await loadBatches(); panel();
+  }
+
   async function usersPage() {
     if (!state.me.can_admin) return notAllowed();
     const main = shell("users");
@@ -598,6 +827,7 @@
       location.replace("#/" + first); return;
     }
     if (id === "load") loadPage();
+    else if (id === "review") reviewPage();
     else if (id === "users") usersPage();
     else dashboard(id);
     if (state.me.must_change && !document.querySelector(".modal")) passwordModal(true);

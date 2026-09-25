@@ -3,16 +3,17 @@
 
     python3 ub_load.py "Statistic Report24092026.csv"     # or the .zip it came in
     python3 ub_load.py a.csv b.zip                        # several files at once
-    python3 ub_load.py --powerbi                          # build the Power BI tables now
+    python3 ub_load.py --rebuild                          # rebuild every batch's tables now
+    python3 ub_load.py --apply <batch_id> <user>          # finalize a reviewer's pending edits
 
 Stop-gap until the SQL Server table behind the report is known (run
 find_source.py to look for it). Reads the export -- tab- or comma-separated,
-optionally zipped -- and stores its rows as they are in ub.raw_rows. That is
-the whole load: nothing is aggregated here. The web app parses and aggregates
-the raw rows a dashboard needs when it is opened (ub_views.sql), and the Power
-BI tables (ub_aggregates.sql) are built from them by --powerbi, when Power BI
-is about to refresh. ClickHouse settings (CH_URL, CH_USER, CH_PASSWORD) come
-from .env, the same as ax_load.py.
+optionally zipped -- stores its rows as they are in ub.raw_rows, then builds
+the tables the dashboards and Power BI read (ub.fact_lines and the aggregates
+in ub_aggregates.sql). A new upload is live at once as a Draft; a reviewer can
+edit its rows in the web app, and --apply writes those edits into the raw rows
+and rebuilds (see "review workflow" in ub_schema.sql). ClickHouse settings
+(CH_URL, CH_USER, CH_PASSWORD) come from .env, the same as ax_load.py.
 
 Re-loading a file replaces its batches (BatchId column; the file name when
 there is none) instead of adding them twice.
@@ -123,12 +124,27 @@ def sql_list(items) -> str:
 
 
 def ensure_schema() -> None:
-    """Tables and views, and the one-time move of an older install onto raw rows."""
+    """Tables and views, the one-time move of an older install onto raw rows, and a build of
+    any batch that has raw rows but no dashboard tables yet."""
     ax_load.run_sql_file(HERE / "ub_schema.sql")
     engine = ch("SELECT engine FROM system.tables WHERE database = 'ub' AND name = 'fact_billing' FORMAT TSV").strip()
     if engine and engine != "View":
         migrate()
+    # fact_lines holds v_lines' columns: if v_lines changed, rebuild it whole
+    cols = lambda t: ch(f"SELECT name, type FROM system.columns WHERE database = 'ub' AND table = '{t}' "
+                        "ORDER BY position FORMAT TSV")
+    if ch("EXISTS TABLE ub.fact_lines FORMAT TSV").strip() == "1" and \
+            ch("EXISTS TABLE ub.v_lines FORMAT TSV").strip() == "1" and cols("fact_lines") != cols("v_lines"):
+        ch("DROP TABLE ub.fact_lines")
     ax_load.run_sql_file(HERE / "ub_views.sql")
+    # batches with no status yet (an older install) start as uploaded: Draft, revision 1
+    ch("INSERT INTO ub.batch_events (batch_id, status, revision, changed_by, note) "
+       "SELECT DISTINCT batch_id, 'draft', 1, 'system', 'uploaded' FROM ub.raw_batches "
+       "WHERE batch_id NOT IN (SELECT batch_id FROM ub.batch_events)")
+    missing = ch("SELECT DISTINCT batch_id FROM ub.raw_batches WHERE batch_id NOT IN "
+                 "(SELECT DISTINCT batch_id FROM ub.fact_lines) FORMAT TSV").split()
+    if missing:
+        build(missing, "first build")
 
 
 # The fact table of an older install, written back as the raw rows it was parsed
@@ -172,13 +188,79 @@ def migrate() -> None:
         sys.exit("migration check failed -- the old lines are kept in ub.fact_billing_old\n"
                  f"before:\n{old}\nafter:\n{new}")
     ch("DROP TABLE ub.fact_billing_old")
+    ch("TRUNCATE TABLE ub.fact_lines")  # built next, by ensure_schema
     for t in ("app_billing", "app_customer_period", "app_connection_period"):
         ch(f"DROP TABLE IF EXISTS ub.{t}")
     print(f"moved: every batch, month, line count and amount matches\n{new}", flush=True)
 
 
+# ============ build: the tables the dashboards and Power BI read ============
+
+def build(batches: list[str], reason: str) -> None:
+    """Rebuild these batches' dashboard lines (fact_lines) from their raw rows, then the Power
+    BI aggregates. The web app's cached results end with the build_log entry."""
+    for b in batches:
+        t0 = time.time()
+        print(f"building the dashboard tables for batch {b} ...", flush=True)
+        ch(f"ALTER TABLE ub.fact_lines DROP PARTITION {sql_list([b])}")
+        ch(f"INSERT INTO ub.fact_lines SELECT * FROM ub.v_lines WHERE batch_id = {sql_list([b])}")
+        n = int(ch(f"SELECT count() FROM ub.fact_lines WHERE batch_id = {sql_list([b])} FORMAT TSV"))
+        ch("INSERT INTO ub.build_log (batch_id, rows, seconds, reason) VALUES "
+           f"({sql_list([b])}, {n}, {time.time() - t0:.2f}, {sql_list([reason])})")
+    t0 = time.time()
+    print("building the aggregates ...", flush=True)
+    ax_load.run_sql_file(HERE / "ub_aggregates.sql")
+    print(f"aggregates and dashboards built  {time.time() - t0:.1f}s", flush=True)
+
+
+def status_of(batch: str) -> tuple[str, int]:
+    r = ch(f"SELECT status, revision FROM ub.v_batch_status WHERE batch_id = {sql_list([batch])} FORMAT TSV").split()
+    return (r[0], int(r[1])) if r else ("draft", 0)
+
+
+def set_status(batch: str, status: str, revision: int, user: str, note: str) -> None:
+    ch("INSERT INTO ub.batch_events (batch_id, status, revision, changed_by, note) VALUES "
+       f"({sql_list([batch])}, {sql_list([status])}, {int(revision)}, {sql_list([user])}, {sql_list([note])})")
+
+
+def apply(batch: str, user: str) -> None:
+    """Finalize a reviewer's edits: write them into the batch's raw rows, rebuild its aggregates and
+    dashboards, and make it a Draft of the next revision, waiting to be marked Reviewed."""
+    ensure_schema()
+    b = sql_list([batch])
+    pending = int(ch(f"SELECT count() FROM ub.raw_pending FINAL WHERE batch_id = {b} FORMAT TSV"))
+    if not pending:
+        sys.exit("nothing to finalize: this batch has no pending edits")
+    status, revision = status_of(batch)
+    print(f"finalizing {pending} edited row(s) of batch {batch} (revision {revision} -> {revision + 1}) ...", flush=True)
+    t0 = time.time()
+    # the batch's rows with the edits in, built beside raw_rows, then swapped in whole
+    ch("CREATE TABLE IF NOT EXISTS ub.raw_rows_next AS ub.raw_rows")
+    ch("TRUNCATE TABLE ub.raw_rows_next")
+    fname = f"(SELECT any(file_name) FROM ub.raw_batches WHERE batch_id = {b})"
+    ch(f"INSERT INTO ub.raw_rows_next (batch_id, file_name, {RAW_COLS}) "
+       f"SELECT batch_id, file_name, {RAW_COLS} FROM ub.raw_rows WHERE batch_id = {b} "
+       f"AND line_no NOT IN (SELECT line_no FROM ub.raw_pending FINAL WHERE batch_id = {b}) "
+       f"UNION ALL "
+       f"SELECT batch_id, {fname}, {RAW_COLS} FROM ub.raw_pending FINAL WHERE batch_id = {b} AND action != 'delete'")
+    rows = int(ch(f"SELECT count() FROM ub.raw_rows_next FORMAT TSV"))
+    ch(f"ALTER TABLE ub.raw_rows REPLACE PARTITION {b} FROM ub.raw_rows_next")
+    ch("TRUNCATE TABLE ub.raw_rows_next")
+    ch(f"DELETE FROM ub.raw_pending WHERE batch_id = {b}")
+    # an edited date can move the batch's month
+    ch(f"DELETE FROM ub.raw_batches WHERE batch_id = {b}")
+    ch(BATCH_MONTHS.format(batches=b))
+    print(f"{rows:,} rows written with the edits in  {time.time() - t0:.1f}s", flush=True)
+    ch("INSERT INTO ub.edit_log (batch_id, action, new_value, user, revision) VALUES "
+       f"({b}, 'finalize', '{pending} row(s)', {sql_list([user])}, {revision + 1})")
+    build([batch], f"finalized edits, revision {revision + 1}")
+    set_status(batch, "draft", revision + 1, user, f"{pending} edited row(s) finalized")
+    print(f"revision {revision + 1} built -- a Draft until it is marked Reviewed", flush=True)
+
+
 def load(paths: list[str]) -> None:
     ensure_schema()
+    loaded = []
     for p in paths:
         print(f"reading {Path(p).name} ...", flush=True)
         for name, text in read_rows(Path(p)):
@@ -205,17 +287,19 @@ def load(paths: list[str]) -> None:
                   f"(file says {float(src[1]):,.2f}), {len(batches)} batch(es), {time.time() - t0:.0f}s")
             if src[0] != dst[0]:
                 print(f"  WARNING: {src[0]} staged vs {dst[0]} stored")
-    print("raw rows stored -- dashboards aggregate them when they are opened", flush=True)
+            for b in batches:  # a fresh upload is live at once, as a Draft waiting for review
+                ch(f"DELETE FROM ub.raw_pending WHERE batch_id = {sql_list([b])}")
+                set_status(b, "draft", status_of(b)[1] + 1, "upload", f"uploaded from {name}")
+            loaded.extend(batches)
+    build(loaded, "upload")
+    print("uploaded: aggregates and dashboards built, status Draft until reviewed", flush=True)
     print(ch("SELECT * FROM ub.v_batches ORDER BY period_month FORMAT PrettyCompactNoEscapes"))
 
 
-def powerbi() -> None:
-    """The tables the Power BI report imports, built from the raw rows now."""
+def rebuild_all() -> None:
+    """Every batch's dashboard tables and the aggregates, from the raw rows as they are now."""
     ensure_schema()
-    t0 = time.time()
-    print("building the Power BI tables from the raw rows ...", flush=True)
-    ax_load.run_sql_file(HERE / "ub_aggregates.sql")
-    print(f"Power BI tables built  {time.time() - t0:.1f}s")
+    build(ch("SELECT DISTINCT batch_id FROM ub.raw_batches FORMAT TSV").split(), "rebuild")
     print(ch("SELECT * FROM ub.v_batches ORDER BY period_month FORMAT PrettyCompactNoEscapes"))
 
 
@@ -223,8 +307,10 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
         sys.exit(__doc__)
-    if args in (["--powerbi"], ["--aggregates"]):  # --aggregates: the old name
-        powerbi()
+    if args in (["--rebuild"], ["--aggregates"], ["--powerbi"]):  # older names still work
+        rebuild_all()
+    elif len(args) == 3 and args[0] == "--apply":
+        apply(args[1], args[2])
     elif args == ["--schema"]:
         ensure_schema()
     else:

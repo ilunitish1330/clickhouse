@@ -8,7 +8,8 @@ number they see -- tiles, charts, tables -- is computed from Praslin rows only.
 The server applies both limits inside the SQL; nothing is filtered in the browser.
 
 To add or change a role: add an entry below. Pages are the keys of
-dashboards.PAGES plus "load" (Data Load) and "users" (user admin).
+dashboards.PAGES plus "load" (Data Load), "review" (Data Review) and "users"
+(user admin).
 """
 from dataclasses import dataclass, field
 
@@ -27,11 +28,13 @@ class Role:
     see_accounts: bool = False           # full customer account numbers
     can_load: bool = False               # upload files / run the pipeline
     can_admin: bool = False              # manage users
+    can_review: bool = False             # edit uploaded rows, finalize edits, mark data reviewed
 
 
 ROLES = {
     "admin": Role("System Administrator", "Everything, including data loads and user management.",
-                  DASHBOARDS + ["load", "users"], see_accounts=True, can_load=True, can_admin=True),
+                  DASHBOARDS + ["load", "review", "users"], see_accounts=True, can_load=True, can_admin=True,
+                  can_review=True),
     "executive": Role("Executive Management", "CEO and board: every dashboard, every utility, no account numbers.",
                       DASHBOARDS),
     "finance": Role("Finance & Revenue Manager", "Revenue, tariffs, customers and billing controls for all utilities.",
@@ -51,6 +54,9 @@ ROLES = {
                              ["customers", "consumption"], see_accounts=True),
     "auditor": Role("Internal Auditor", "Read-only access to every dashboard and the load history.",
                     DASHBOARDS + ["load_history"], see_accounts=True),
+    "reviewer": Role("Data Reviewer", "Reviews uploads: checks the dashboards and data, edits rows, finalizes "
+                     "the edits and marks the data reviewed.", DASHBOARDS + ["review"], see_accounts=True,
+                     can_review=True),
     "data_operator": Role("Data Operator", "Uploads billing exports and runs the pipeline; no dashboards.",
                           ["load"], can_load=True),
 }
@@ -69,6 +75,7 @@ SEED_USERS = [
     ("service", "Customer Service Officer", "customer_service", 0),
     ("auditor", "Internal Auditor", "auditor", 0),
     ("operator", "Data Operator", "data_operator", 0),
+    ("reviewer", "Data Reviewer", "reviewer", 0),
 ]
 
 

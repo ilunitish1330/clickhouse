@@ -203,10 +203,10 @@ PAGES = {
 # Query building -- every value placed into SQL is checked against a whitelist
 # =============================================================================
 
-# Nothing below reads a pre-built table. Every report is parsed and aggregated
-# from the raw rows (ub.raw_rows, through the ub.v_lines view) when it is asked
-# for, reading only the batches, utilities and islands it needs. Results are
-# kept in memory until the raw rows change (a load, or a batch replaced).
+# Every report reads the built billing lines (ub.fact_lines: rebuilt per batch
+# when it is uploaded and when a reviewer finalizes edits) and aggregates what
+# it needs, reading only the batches, utilities and islands it asks for.
+# Results are kept in memory until the next build.
 
 import threading
 import time
@@ -218,21 +218,21 @@ CACHE_SIZE = 3000
 
 
 def data_version() -> str:
-    """Changes whenever raw rows are loaded or replaced."""
+    """Changes with every build of the dashboard tables."""
     try:
-        return ax_load.ch("SELECT count(), max(loaded_at), sum(rows) FROM ub.raw_batches FORMAT TSV").strip()
+        return ax_load.ch("SELECT count(), max(ts), (SELECT count() FROM ub.fact_lines) FROM ub.build_log FORMAT TSV").strip()
     except Exception:
         return ""
 
 
 class Stats:
-    """What building one page cost: raw rows read, queries run, how many came from the cache."""
+    """What building one page cost: rows read, queries run, how many came from the cache."""
     def __init__(self):
         self.rows = self.queries = self.cached = 0
         self.t0 = time.time()
 
     def out(self) -> dict:
-        return {"raw_rows_read": self.rows, "queries": self.queries, "from_cache": self.cached,
+        return {"rows_read": self.rows, "queries": self.queries, "from_cache": self.cached,
                 "ms": round((time.time() - self.t0) * 1000)}
 
 
@@ -274,9 +274,7 @@ def periods(version: str | None = None) -> list[dict]:
 
 def period_batches(version: str) -> dict:
     """period -> the batches holding its rows, so a report on one period skips every other batch."""
-    rows = run("SELECT toString(period) AS period, groupUniqArray(batch_id) AS batches FROM "
-               "(SELECT DISTINCT r.batch_id AS batch_id, if(r.row_month > '1970-01-01', r.row_month, b.batch_month) AS period "
-               " FROM ub.raw_rows AS r ANY LEFT JOIN ub.raw_batches AS b ON b.batch_id = r.batch_id) GROUP BY period",
+    rows = run("SELECT toString(period) AS period, groupUniqArray(batch_id) AS batches FROM ub.fact_lines GROUP BY period",
                version)
     return {r["period"]: r["batches"] for r in rows}
 
@@ -299,9 +297,8 @@ def tariffs(scope: dict) -> list[dict]:
     if scope["region"]:
         where += f" AND region_code = {int(scope['region'])}"
     try:
-        return run(f"SELECT TARIFFGROUPDESC AS name, groupUniqArray(utility_code) AS utilities FROM ub.raw_rows "
-                   f"WHERE {where} AND TARIFFGROUPDESC != '' GROUP BY name ORDER BY sum(toFloat64OrZero(AMOUNT)) DESC",
-                   data_version())
+        return run(f"SELECT tariff_desc AS name, groupUniqArray(utility_code) AS utilities FROM ub.fact_lines "
+                   f"WHERE {where} AND tariff_desc != '' GROUP BY name ORDER BY sum(amount) DESC", data_version())
     except Exception:
         return []
 
@@ -319,6 +316,8 @@ def scope_where(scope: dict, sel: dict, page_utility, *, all_periods=False) -> s
         conds.append(f"region_code = {int(region)}")
     if sel.get("period") and not all_periods:
         conds.append(f"period = '{sel['period']}'")
+    if sel.get("range"):  # a from-to range bounds every chart, trends included
+        conds.append(f"period BETWEEN '{sel['range'][0]}' AND '{sel['range'][1]}'")
     if sel.get("sector"):
         conds.append(f"sector_type = {sql_str(sel['sector'])}")
     if sel.get("tariff"):
@@ -327,21 +326,25 @@ def scope_where(scope: dict, sel: dict, page_utility, *, all_periods=False) -> s
 
 
 def source(src: str, scope: dict, sel: dict, page_utility, ctx: dict, *, all_periods=False) -> str:
-    """The FROM ... WHERE of one report query: the raw rows it needs, parsed, filtered and -- for
-    customer (cp) and connection (cn) reports -- rolled up per customer or connection, right now."""
+    """The FROM ... WHERE of one report query: the built lines it needs, filtered and -- for
+    customer (cp) and connection (cn) reports -- rolled up per customer or connection."""
     period = None if all_periods else sel.get("period")
     batches = ctx["batches"]
+    plist = ctx["periods"]
+    rng = sel.get("range")
+    # the periods this query reports on: one, a range, or (None) every period
+    target = [period] if period else [p["period"] for p in plist if rng[0] <= p["period"] <= rng[1]] if rng else None
 
     def prune(ps):  # only the batches that hold these periods: ClickHouse skips the rest unread
         bs = sorted({b for p in ps for b in batches.get(p, [])})
         return f" AND batch_id IN ({', '.join(sql_str(b) for b in bs) or 'NULL'})"
 
     if src == "b":
-        return f"ub.v_lines WHERE {scope_where(scope, sel, page_utility, all_periods=all_periods)}" + \
-            (prune([period]) if period else "")
+        return f"ub.fact_lines WHERE {scope_where(scope, sel, page_utility, all_periods=all_periods)}" + \
+            (prune(target) if target is not None else "")
     if src == "cp":
-        lines = f"ub.v_lines WHERE {scope_where(scope, sel, page_utility, all_periods=all_periods)}" + \
-            (prune([period]) if period else "")
+        lines = f"ub.fact_lines WHERE {scope_where(scope, sel, page_utility, all_periods=all_periods)}" + \
+            (prune(target) if target is not None else "")
         return f"""(
     SELECT period, utility_code, customer_id, reg AS region_code, uname AS utility_name, rname AS region_name,
            amt AS amount, cons AS consumption_qty, inv AS invoices,
@@ -356,17 +359,19 @@ def source(src: str, scope: dict, sel: dict, page_utility, ctx: dict, *, all_per
                        any(utility_name) AS uname, any(region_name) AS rname,
                        sum(amount) AS amt, sumIf(quantity, charge_type = 1) AS cons, uniqExact(invoice_id) AS inv
                 FROM {lines} GROUP BY period, utility_code, customer_id))) WHERE 1"""
-    # cn: a connection's change needs its previous period in the data too, so read that as well
-    plist = ctx["periods"]
+    # cn: a connection's change needs the period before the first one reported, so read that too
     idx = {p["period"]: int(p["period_index"]) for p in plist}
     order = "[" + ", ".join(f"toDate('{p['period']}')" for p in plist) + "]"
-    if period:
-        prev = next((p["period"] for p in plist if int(p["period_index"]) == idx[period] - 1), None)
-        want = [period] + ([prev] if prev else [])
-        lines = f"ub.v_lines WHERE {scope_where(scope, {**sel, 'period': None}, page_utility)}" + \
-            f" AND period IN ({', '.join(sql_str(p) for p in want)})" + prune(want)
+    if target is not None:
+        first = min(target) if target else None
+        prev = next((p["period"] for p in plist if first and int(p["period_index"]) == idx[first] - 1), None)
+        want = target + ([prev] if prev else [])
+        lines = f"ub.fact_lines WHERE {scope_where(scope, {**sel, 'period': None, 'range': None}, page_utility)}" + \
+            f" AND period IN ({', '.join(sql_str(p) for p in want) or 'NULL'})" + prune(want)
+        keep = f"period IN ({', '.join(sql_str(p) for p in target) or 'NULL'})"
     else:
-        lines = f"ub.v_lines WHERE {scope_where(scope, sel, page_utility, all_periods=True)}"
+        lines = f"ub.fact_lines WHERE {scope_where(scope, sel, page_utility, all_periods=True)}"
+        keep = "1"
     return f"""(
     SELECT period, utility_code, connection_id, reg AS region_code, uname AS utility_name, rname AS region_name,
            pv AS pv_connection, if(pv = 1, 'PV', 'No PV') AS pv_label, amt AS amount, cons AS consumption_qty,
@@ -391,7 +396,7 @@ def source(src: str, scope: dict, sel: dict, page_utility, ctx: dict, *, all_per
                 FROM {lines} GROUP BY period, utility_code, connection_id)
           WINDOW w AS (PARTITION BY utility_code, connection_id ORDER BY period_index
                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)))
-    WHERE {f"period = '{period}'" if period else "1"}"""
+    WHERE {keep}"""
 
 
 def num(v):
@@ -493,7 +498,28 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
             "all_periods": c["all_periods"], "filter_key": fkey[0] if fkey else None,
         })
     return {"title": page["title"], "subtitle": page["subtitle"], "tiles": tiles, "charts": charts,
-            "built": stats.out()}
+            "built": stats.out(), "review": review_status(ctx, sel)}
+
+
+def review_status(ctx: dict, sel: dict) -> list[dict]:
+    """Draft or Final, for each batch behind the periods on screen."""
+    if sel.get("period"):
+        ps = [sel["period"]]
+    elif sel.get("range"):
+        ps = [p["period"] for p in ctx["periods"] if sel["range"][0] <= p["period"] <= sel["range"][1]]
+    else:
+        ps = [p["period"] for p in ctx["periods"]]
+    batches = sorted({b for p in ps for b in ctx["batches"].get(p, [])})
+    if not batches:
+        return []
+    labels = {p["period"]: p["period_label"] for p in ctx["periods"]}
+    by_batch = {b: [labels.get(p, p) for p in ps if b in ctx["batches"].get(p, [])] for b in batches}
+    rows = run("SELECT batch_id, status, revision, changed_by, toString(last_change) AS last_change "
+               f"FROM ub.v_batch_status WHERE batch_id IN ({', '.join(sql_str(b) for b in batches)})")
+    got = {r["batch_id"]: r for r in rows}
+    return [{"periods": by_batch[b], "status": got.get(b, {}).get("status", "draft"),
+             "revision": int(got.get(b, {}).get("revision", 1)), "by": got.get(b, {}).get("changed_by", ""),
+             "at": got.get(b, {}).get("last_change", "")} for b in batches]
 
 
 _DIM_TITLES = {"utility_name": "Utility", "region_name": "Island", "sector_type": "Sector type",

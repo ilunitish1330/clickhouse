@@ -1,8 +1,12 @@
--- The raw rows (ub.raw_rows), read as billing lines. These are views: nothing
--- here is stored, every query parses the raw text it reads, when it runs. A
--- report that filters on utility_code, region_code or period reads only those
--- rows -- the first two are raw_rows' sort key, and the web app adds a
--- row_month / batch_id condition for the period (webapp/dashboards.py).
+-- From the raw rows (ub.raw_rows) to what the dashboards and Power BI read.
+--
+--   raw_rows --v_lines (a view: parses the text)--> fact_lines (a table, BUILT)
+--            --> fact_billing, v_periods, v_batches (views) and the Power BI
+--                tables (ub_aggregates.sql)
+--
+-- fact_lines is built per batch when the batch is uploaded and again when a
+-- reviewer finalizes edits (ub_load.py build()). Until then the dashboards keep
+-- showing the last build, whatever is edited in raw_rows / raw_pending.
 --
 -- Statements are split on ';' at end of line: keep ';' off the end of comments.
 
@@ -58,6 +62,14 @@ SELECT
 FROM ub.raw_rows AS r
 ANY LEFT JOIN ub.raw_batches AS b ON b.batch_id = r.batch_id;
 
+-- The built billing lines: what every dashboard reads. Created (and filled from
+-- all raw rows) once; after that ub_load.py rebuilds one batch's partition at a time.
+CREATE TABLE IF NOT EXISTS ub.fact_lines
+ENGINE = MergeTree
+PARTITION BY batch_id
+ORDER BY (utility_code, region_code, period, line_no)
+AS SELECT * FROM ub.v_lines;
+
 -- The billing fact, under the name the Power BI SQL (ub_aggregates.sql) reads.
 CREATE OR REPLACE VIEW ub.fact_billing AS
 SELECT batch_id, line_no, period AS period_month, stat_date, invoice_date, date_exact, invoice_id,
@@ -66,7 +78,7 @@ SELECT batch_id, line_no, period AS period_month, stat_date, invoice_date, date_
        sector_code, sector_desc, charge_type, charge_desc, is_pv, value_type, value_desc,
        invoice_origin, origin_desc, is_free_text, member_type, pv_connection, water_node,
        water_source, amount, quantity, charge_key
-FROM ub.v_lines;
+FROM ub.fact_lines;
 
 -- The billing periods present, numbered so "previous period" means the
 -- previous period IN THE DATA (June 2025 -> January 2026 has no months between).
@@ -74,11 +86,16 @@ CREATE OR REPLACE VIEW ub.v_periods AS
 SELECT period, formatDateTime(period, '%Y-%m') AS year_month,
        formatDateTime(period, '%b %Y') AS period_label, toYear(period) AS year,
        toUInt32(row_number() OVER (ORDER BY period)) AS period_index
-FROM (SELECT DISTINCT if(r.row_month > toDate('1970-01-01'), r.row_month, b.batch_month) AS period
-      FROM ub.raw_rows AS r ANY LEFT JOIN ub.raw_batches AS b ON b.batch_id = r.batch_id)
+FROM (SELECT DISTINCT period FROM ub.fact_lines)
 WHERE period > toDate('1970-01-01');
 
 CREATE OR REPLACE VIEW ub.v_batches AS
 SELECT batch_id, period AS period_month, count() AS lines, sum(amount) AS amount,
        uniqExact(invoice_id) AS invoices, max(date_exact) AS has_exact_dates
-FROM ub.v_lines GROUP BY batch_id, period;
+FROM ub.fact_lines GROUP BY batch_id, period;
+
+-- Each batch's current review status (the latest event).
+CREATE OR REPLACE VIEW ub.v_batch_status AS
+SELECT batch_id, argMax(status, changed_at) AS status, argMax(revision, changed_at) AS revision,
+       argMax(changed_by, changed_at) AS changed_by, max(changed_at) AS last_change
+FROM ub.batch_events GROUP BY batch_id;

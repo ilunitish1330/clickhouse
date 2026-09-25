@@ -104,6 +104,55 @@ def main() -> None:
     assert adm.post("/api/users", json={"username": "admin", "full_name": "a", "role": "executive",
                                         "region_code": 0}).status_code == 400, "no self-demotion"
 
+    # periods: one month, a from-to range, or everything combined
+    months = [p["period"] for p in ceo.get("/api/me").json()["filters"]["periods"]]
+    first, last = months[0], months[-1]
+    each = sum(revenue(ceo, period=m) for m in months)
+    both = ceo.get("/api/page/executive", params={"pfrom": last, "pto": first}).json()["tiles"][0]["value"]
+    assert abs(both - each) < 0.01, "a range (in either order) adds up its months"
+    assert revenue(ceo, period="", pfrom=last, pto=last) == revenue(ceo, period=last), "a one-month range is that month"
+
+    # review: only reviewers; an edit waits until it is finalized, then rebuilds; Reviewed makes it Final
+    assert ceo.get("/api/review/batches").status_code == 403
+    rv = login("reviewer")
+    batches = rv.get("/api/review/batches").json()["batches"]
+    b = next(x for x in batches if x["period"] == last)["batch_id"]
+    row = rv.get(f"/api/review/{b}/rows", params={"size": 10}).json()["rows"][0]
+    line, amount = row["line_no"], row["values"]["AMOUNT"]
+    assert rv.post(f"/api/review/{b}/edit", json={"line_no": line, "changes": {"AMOUNT": "abc"}}).status_code == 400
+    assert rv.post(f"/api/review/{b}/edit", json={"line_no": line, "changes": {"BatchId": "x"}}).status_code == 400
+    before = revenue(ceo, period=last)
+
+    def finalize():
+        job = rv.post(f"/api/review/{b}/finalize").json()["job"]
+        for _ in range(600):
+            j = rv.get(f"/api/load/{job}").json()
+            if j["status"] != "running":
+                assert j["status"] == "done", "\n".join(j["log"][-15:])
+                return
+            __import__("time").sleep(0.2)
+        raise AssertionError("finalize did not finish")
+
+    def status():
+        return next(x for x in rv.get("/api/review/batches").json()["batches"] if x["batch_id"] == b)
+
+    assert rv.post(f"/api/review/{b}/edit", json={"line_no": line, "changes": {"AMOUNT": str(float(amount) + 1000)}}).json()["ok"]
+    assert status()["pending"] == 1 and revenue(ceo, period=last) == before, "a pending edit is not on the dashboards"
+    assert rv.post(f"/api/review/{b}/reviewed").status_code == 400, "cannot review with pending edits"
+    rev = status()["revision"]
+    finalize()
+    assert abs(revenue(ceo, period=last) - before - 1000) < 0.01, "finalize rebuilds the dashboards"
+    assert status()["status"] == "draft" and status()["revision"] == rev + 1 and status()["pending"] == 0
+    assert rv.post(f"/api/review/{b}/reviewed").json()["ok"] and status()["status"] == "final"
+    assert ceo.get("/api/page/executive", params={"period": last}).json()["review"][0]["status"] == "final"
+    # put it back: editing Final data starts the next Draft revision
+    assert rv.post(f"/api/review/{b}/edit", json={"line_no": line, "changes": {"AMOUNT": amount}}).json()["ok"]
+    finalize()
+    assert revenue(ceo, period=last) == before and status()["status"] == "draft" and status()["revision"] == rev + 2
+    assert rv.post(f"/api/review/{b}/reviewed").json()["ok"]
+    hist = rv.get(f"/api/review/{b}/history").json()["history"]
+    assert {"update", "finalize", "reviewed"} <= {h["action"] for h in hist}
+
     # password change
     assert ceo.post("/api/me/password", json={"current": "nope", "new": "Another-pass-2"}).status_code == 400
     assert ceo.post("/api/me/password", json={"current": PW, "new": "Another-pass-2"}).status_code == 200

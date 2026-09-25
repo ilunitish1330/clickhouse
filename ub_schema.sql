@@ -90,3 +90,73 @@ CREATE TABLE IF NOT EXISTS ub.load_log
 )
 ENGINE = MergeTree
 ORDER BY loaded_at;
+
+-- ============ review workflow ============
+-- An upload is live on the dashboards at once, as a Draft. A reviewer can edit
+-- its rows in the web app: edits wait in raw_pending until "Finalize modified
+-- data" writes them into raw_rows and rebuilds; "Reviewed" makes it Final.
+-- Editing a Final batch later starts a new Draft revision.
+
+-- Every status change of a batch; its status is the latest row.
+CREATE TABLE IF NOT EXISTS ub.batch_events
+(
+    batch_id   String,
+    status     LowCardinality(String),   -- draft | final
+    revision   UInt32,                   -- 1 = as uploaded, +1 per finalized set of edits
+    changed_by String,
+    changed_at DateTime64(3) DEFAULT now64(3),
+    note       String
+)
+ENGINE = MergeTree
+ORDER BY (batch_id, changed_at);
+
+-- Edits not yet finalized: the whole new row, latest image per line.
+-- action: update (a changed row), insert (a new row), delete (a removed row).
+CREATE TABLE IF NOT EXISTS ub.raw_pending
+(
+    batch_id   String,
+    line_no    UInt32,
+    action     LowCardinality(String),
+    ADDITIONALITEMSTYPE String, AMOUNT String, CONNECTIONID String, CURDATE String,
+    CUSTID String, INVOICEDATE String, INVOICEID String, INVOICEORIGIN String,
+    INVOICEVALUETYPE String, QUANTITY String, REGION String, STATCATEGORIES String,
+    TARIFFGROUPCODE String, TARIFFGROUPDESC String, UTILITYTYPE String,
+    MCSEXTERNALASSETID String, CURDATETICKS String, ADDITIONALITEMSDESCRIPTION String,
+    CATEGORYDESCRIPTION String, CONNECTIONMEMBERTYPE String, FREETEXTINVOICE String,
+    INVOICEORIGINDESCRIPTION String, INVOICEVALUEDESCRIPTION String,
+    UTILITYTYPEDESCRIPTION String, SECTORDESCRIPTION String, SECTORGROUP String,
+    REGIONNAME String, METERWATERNODE String, METERWATERSOURCE String,
+    PVINDICATION String, BatchId String, LoadDateTime String,
+    edited_by  String,
+    edited_at  DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(edited_at)
+ORDER BY (batch_id, line_no);
+
+-- Who changed what: one row per changed cell, and one per finalize / review / discard.
+CREATE TABLE IF NOT EXISTS ub.edit_log
+(
+    ts        DateTime64(3) DEFAULT now64(3),
+    batch_id  String,
+    line_no   UInt32,
+    action    LowCardinality(String),    -- update | insert | delete | undo | discard | finalize | reviewed
+    column    String,
+    old_value String,
+    new_value String,
+    user      String,
+    revision  UInt32
+)
+ENGINE = MergeTree
+ORDER BY (batch_id, ts);
+
+-- Each build of the dashboard tables; the web app's cached results are keyed on it.
+CREATE TABLE IF NOT EXISTS ub.build_log
+(
+    ts       DateTime64(3) DEFAULT now64(3),
+    batch_id String,
+    rows     UInt64,
+    seconds  Float32,
+    reason   String
+)
+ENGINE = MergeTree
+ORDER BY ts;

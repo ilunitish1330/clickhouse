@@ -38,6 +38,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import ax_load  # noqa: E402  (.env, ch())
 import dashboards  # noqa: E402
+import review  # noqa: E402
 from roles import ISLANDS, ROLES, SEED_USERS  # noqa: E402
 
 ch = ax_load.ch
@@ -76,6 +77,9 @@ def esc(s: str) -> str:
     return "'" + str(s).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
+NEW_ROLES = {"reviewer"}
+
+
 def init_store() -> None:
     ch(f"CREATE DATABASE IF NOT EXISTS {APP_DB}")
     ch(f"""CREATE TABLE IF NOT EXISTS {APP_DB}.users (
@@ -94,6 +98,13 @@ def init_store() -> None:
         for username, name, role, region in SEED_USERS:
             save_user(username, name, role, region, password=pw, must_change=1)
         print(f"created {len(SEED_USERS)} users (one per role), password '{pw}' -- change them")
+    # roles added after the first start get their default user once, if nobody has the role yet
+    for username, name, role, region in SEED_USERS:
+        if role in NEW_ROLES and q(f"SELECT count() AS n FROM {APP_DB}.users FINAL WHERE role = {esc(role)}")[0]["n"] in (0, "0") \
+                and not get_user(username):
+            pw = os.environ.get("APP_DEFAULT_PASSWORD", "Puc@2026")
+            save_user(username, name, role, region, password=pw, must_change=1)
+            print(f"created user '{username}' for the new {role} role, password '{pw}' -- change it")
 
 
 def get_user(username: str) -> dict | None:
@@ -205,7 +216,7 @@ def me(request: Request):
         "role_title": role.title, "role_description": role.description,
         "island": ISLANDS[int(user["region_code"])], "must_change": str(user["must_change"]) == "1",
         "pages": pages, "can_load": role.can_load or "load_history" in role.pages, "can_run": role.can_load,
-        "can_admin": role.can_admin,
+        "can_admin": role.can_admin, "can_review": role.can_review,
         "filters": {
             "periods": dashboards.periods(),
             "regions": [{"code": c, "name": n} for c, n in ISLANDS.items() if c and (not scope["region"] or c == scope["region"])],
@@ -219,7 +230,7 @@ def me(request: Request):
 
 @app.get("/api/page/{page_id}")
 def page(page_id: str, request: Request, period: str = "", region: int = 0, utility: int = 0,
-         sector: str = "", tariff: str = "", compare: str = ""):
+         sector: str = "", tariff: str = "", compare: str = "", pfrom: str = "", pto: str = ""):
     user = current_user(request)
     if page_id not in dashboards.PAGES:
         raise HTTPException(404, "No such page")
@@ -231,7 +242,14 @@ def page(page_id: str, request: Request, period: str = "", region: int = 0, util
            "utility": utility if utility in scope["utilities"] else None,
            "sector": sector if sector in dashboards.SECTORS else None,
            "tariff": tariff if tariff and tariff in {t["name"] for t in dashboards.tariffs(scope)} else None,
-           "compare": compare if compare == "none" or compare in valid_periods else None}
+           "compare": compare if compare == "none" or compare in valid_periods else None,
+           "range": None}
+    if not sel["period"] and pfrom in valid_periods and pto in valid_periods:  # from-to, in either order
+        a, b = sorted([pfrom, pto])
+        if a == b:
+            sel["period"] = a
+        else:
+            sel["range"] = (a, b)
     pu = dashboards.PAGES[page_id]["utility"]
     if pu and pu not in scope["utilities"]:
         raise HTTPException(403, "Your role does not include this utility")
@@ -255,7 +273,7 @@ def estimate(kind: str, size: int) -> float:
                  f"ORDER BY ts DESC LIMIT 10")
     except Exception:
         rows = []
-    if kind == "rebuild":
+    if kind in ("rebuild", "apply"):
         secs = sorted(float(r["seconds"]) for r in rows)
         return secs[len(secs) // 2] if secs else DEFAULT_REBUILD_SECONDS
     rates = sorted(float(r["seconds"]) / max(int(r["bytes"]), 1) for r in rows)
@@ -319,7 +337,7 @@ def rebuild(request: Request):
     user = current_user(request)
     if not ROLES[user["role"]].can_load:
         raise HTTPException(403, "Your role cannot run the pipeline")
-    return start_job(user, "(Power BI tables)", ["--powerbi"], "rebuild")
+    return start_job(user, "Rebuild aggregates", ["--rebuild"], "rebuild")
 
 
 @app.get("/api/load/{job_id}")
@@ -333,6 +351,112 @@ def job(job_id: str, request: Request):
     return job
 
 
+# --- data review ---------------------------------------------------------------------
+
+def reviewer(request: Request) -> dict:
+    user = current_user(request)
+    if not ROLES[user["role"]].can_review:
+        raise HTTPException(403, "Your role cannot review data")
+    return user
+
+
+def review_call(fn, *args):
+    """Edits wait while a load or a finalize is running, so none is lost to the swap."""
+    if JOB_LOCK.locked():
+        raise HTTPException(409, "A load or finalize is running -- try again when it has finished")
+    try:
+        return fn(*args)
+    except review.Invalid as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/review/columns")
+def review_columns(request: Request):
+    reviewer(request)
+    return review.columns()
+
+
+@app.get("/api/review/batches")
+def review_batches(request: Request):
+    reviewer(request)
+    return {"batches": review.batches(), "running": next((j for j in JOBS.values() if j["status"] == "running"), None)}
+
+
+@app.get("/api/review/{batch_id}/rows")
+def review_rows(batch_id: str, request: Request, search: str = "", changed: int = 0, page: int = 1,
+                size: int = 50, utility: int = 0, region: int = 0):
+    reviewer(request)
+    try:
+        review.batch(batch_id)
+    except review.Invalid as e:
+        raise HTTPException(404, str(e))
+    return review.rows(batch_id, search[:100], bool(changed), page, size, utility, region)
+
+
+@app.get("/api/review/{batch_id}/history")
+def review_history(batch_id: str, request: Request):
+    reviewer(request)
+    return {"history": review.history(batch_id)}
+
+
+@app.post("/api/review/{batch_id}/edit")
+async def review_edit(batch_id: str, request: Request):
+    user = reviewer(request)
+    b = await request.json()
+    if not isinstance(b.get("changes"), dict) or not b["changes"]:
+        raise HTTPException(400, "Nothing to change")
+    return review_call(review.edit, batch_id, int(b.get("line_no", 0)), b["changes"], user["username"])
+
+
+@app.post("/api/review/{batch_id}/add")
+async def review_add(batch_id: str, request: Request):
+    user = reviewer(request)
+    b = await request.json()
+    return review_call(review.add, batch_id, b.get("values") or {}, user["username"])
+
+
+@app.post("/api/review/{batch_id}/delete")
+async def review_delete(batch_id: str, request: Request):
+    user = reviewer(request)
+    b = await request.json()
+    return review_call(review.delete, batch_id, int(b.get("line_no", 0)), user["username"])
+
+
+@app.post("/api/review/{batch_id}/undo")
+async def review_undo(batch_id: str, request: Request):
+    user = reviewer(request)
+    b = await request.json()
+    return review_call(review.undo, batch_id, int(b.get("line_no", 0)), user["username"])
+
+
+@app.post("/api/review/{batch_id}/discard")
+def review_discard(batch_id: str, request: Request):
+    user = reviewer(request)
+    return review_call(review.discard, batch_id, user["username"])
+
+
+@app.post("/api/review/{batch_id}/finalize")
+def review_finalize(batch_id: str, request: Request):
+    """Write the pending edits into the raw rows and rebuild the aggregates and dashboards."""
+    user = reviewer(request)
+    try:
+        b = review.batch(batch_id)
+    except review.Invalid as e:
+        raise HTTPException(404, str(e))
+    if not int(b["pending"]):
+        raise HTTPException(400, "There are no pending edits to finalize")
+    label = f"Finalize {b['period'][:7] or batch_id[:8]}"
+    audit(user["username"], "finalize", batch_id)
+    return start_job(user, label, ["--apply", batch_id, user["username"]], "apply")
+
+
+@app.post("/api/review/{batch_id}/reviewed")
+def review_reviewed(batch_id: str, request: Request):
+    user = reviewer(request)
+    audit(user["username"], "reviewed", batch_id)
+    return review_call(review.reviewed, batch_id, user["username"])
+
+
 @app.get("/api/loads")
 def loads(request: Request):
     user = current_user(request)
@@ -340,8 +464,11 @@ def loads(request: Request):
     if not (role.can_load or "load_history" in role.pages):
         raise HTTPException(403, "Your role cannot see loads")
     try:
-        batches = q("SELECT batch_id, toString(period_month) AS period, lines, toFloat64(amount) AS amount, "
-                    "invoices FROM ub.v_batches ORDER BY period_month")
+        batches = q("SELECT b.batch_id AS batch_id, toString(b.period_month) AS period, b.lines AS lines, "
+                    "toFloat64(b.amount) AS amount, b.invoices AS invoices, ifNull(s.status, 'draft') AS status, "
+                    "ifNull(s.revision, 1) AS revision FROM ub.v_batches AS b "
+                    "LEFT JOIN ub.v_batch_status AS s ON s.batch_id = b.batch_id "
+                    "ORDER BY b.period_month SETTINGS join_use_nulls = 1")
         history = q("SELECT toString(loaded_at) AS loaded_at, file_name, batch_id, rows, toFloat64(amount) AS amount "
                     "FROM ub.load_log ORDER BY loaded_at DESC LIMIT 30")
     except Exception:
