@@ -6,7 +6,7 @@ Run button that loads a billing export into ClickHouse.
     python3 webapp/server.py                    # http://<server>:8020
 
 ClickHouse connection comes from .env (CH_URL, CH_USER, CH_PASSWORD), the same
-as the loaders. Users live in ClickHouse database puc_app. The first start
+as the loaders. Users live in ClickHouse database puc_app (APP_DB). The first start
 creates one user per role (webapp/roles.py SEED_USERS) with the password in
 APP_DEFAULT_PASSWORD (default "Puc@2026") -- change them all on first login.
 
@@ -41,6 +41,7 @@ import dashboards  # noqa: E402
 from roles import ISLANDS, ROLES, SEED_USERS  # noqa: E402
 
 ch = ax_load.ch
+APP_DB = os.environ.get("APP_DB", "puc_app")  # users, audit, load timings
 UPLOADS = REPO / "data" / "uploads"
 SESSION_HOURS = 10
 COOKIE = "puc_session"
@@ -76,19 +77,19 @@ def esc(s: str) -> str:
 
 
 def init_store() -> None:
-    ch("CREATE DATABASE IF NOT EXISTS puc_app")
-    ch("""CREATE TABLE IF NOT EXISTS puc_app.users (
+    ch(f"CREATE DATABASE IF NOT EXISTS {APP_DB}")
+    ch(f"""CREATE TABLE IF NOT EXISTS {APP_DB}.users (
             username String, full_name String, role LowCardinality(String), region_code UInt8,
             salt String, pw_hash String, must_change UInt8, active UInt8,
             updated_at DateTime64(3) DEFAULT now64(3))
           ENGINE = ReplacingMergeTree(updated_at) ORDER BY username""")
-    ch("""CREATE TABLE IF NOT EXISTS puc_app.load_timings (
+    ch(f"""CREATE TABLE IF NOT EXISTS {APP_DB}.load_timings (
             ts DateTime DEFAULT now(), kind LowCardinality(String), bytes UInt64, seconds Float32)
           ENGINE = MergeTree ORDER BY ts""")
-    ch("""CREATE TABLE IF NOT EXISTS puc_app.audit (
+    ch(f"""CREATE TABLE IF NOT EXISTS {APP_DB}.audit (
             ts DateTime DEFAULT now(), username String, action LowCardinality(String), detail String)
           ENGINE = MergeTree ORDER BY ts""")
-    if q("SELECT count() AS n FROM puc_app.users")[0]["n"] in (0, "0"):
+    if q(f"SELECT count() AS n FROM {APP_DB}.users")[0]["n"] in (0, "0"):
         pw = os.environ.get("APP_DEFAULT_PASSWORD", "Puc@2026")
         for username, name, role, region in SEED_USERS:
             save_user(username, name, role, region, password=pw, must_change=1)
@@ -96,7 +97,7 @@ def init_store() -> None:
 
 
 def get_user(username: str) -> dict | None:
-    rows = q(f"SELECT * FROM puc_app.users FINAL WHERE username = {esc(username)}")
+    rows = q(f"SELECT * FROM {APP_DB}.users FINAL WHERE username = {esc(username)}")
     return rows[0] if rows else None
 
 
@@ -104,14 +105,14 @@ def save_user(username, full_name, role, region, *, password=None, must_change=0
     salt, pw_hash = (keep["salt"], keep["pw_hash"]) if keep and password is None else (secrets.token_hex(8), None)
     if password is not None:
         pw_hash = hash_pw(password, salt)
-    ch(f"INSERT INTO puc_app.users (username, full_name, role, region_code, salt, pw_hash, must_change, active) "
+    ch(f"INSERT INTO {APP_DB}.users (username, full_name, role, region_code, salt, pw_hash, must_change, active) "
        f"VALUES ({esc(username)}, {esc(full_name)}, {esc(role)}, {int(region)}, {esc(salt)}, {esc(pw_hash)}, "
        f"{int(must_change)}, {int(active)})")
 
 
 def audit(username: str, action: str, detail: str = "") -> None:
     try:
-        ch(f"INSERT INTO puc_app.audit (username, action, detail) VALUES ({esc(username)}, {esc(action)}, {esc(detail)})")
+        ch(f"INSERT INTO {APP_DB}.audit (username, action, detail) VALUES ({esc(username)}, {esc(action)}, {esc(detail)})")
     except Exception:
         pass
 
@@ -239,7 +240,7 @@ DEFAULT_SECONDS_PER_MB, DEFAULT_REBUILD_SECONDS = 3.0, 8.0
 def estimate(kind: str, size: int) -> float:
     """Seconds a job should take, from the last 10 jobs of its kind on this server."""
     try:
-        rows = q(f"SELECT bytes, seconds FROM puc_app.load_timings WHERE kind = {esc(kind)} "
+        rows = q(f"SELECT bytes, seconds FROM {APP_DB}.load_timings WHERE kind = {esc(kind)} "
                  f"ORDER BY ts DESC LIMIT 10")
     except Exception:
         rows = []
@@ -267,7 +268,7 @@ def run_job(job_id: str, args: list[str]) -> None:
         job["elapsed"] = round(time.time() - job["t0"], 1)
         if job["status"] == "done":
             try:
-                ch(f"INSERT INTO puc_app.load_timings (kind, bytes, seconds) VALUES "
+                ch(f"INSERT INTO {APP_DB}.load_timings (kind, bytes, seconds) VALUES "
                    f"({esc(job['kind'])}, {int(job['bytes'])}, {job['elapsed']})")
             except Exception:
                 pass
@@ -351,7 +352,7 @@ def need_admin(request: Request) -> dict:
 def users(request: Request):
     need_admin(request)
     rows = q("SELECT username, full_name, role, region_code, active, must_change, toString(updated_at) AS updated "
-             "FROM puc_app.users FINAL ORDER BY username")
+             f"FROM {APP_DB}.users FINAL ORDER BY username")
     return {"users": rows,
             "roles": [{"id": k, "title": r.title, "description": r.description} for k, r in ROLES.items()],
             "islands": [{"code": c, "name": n} for c, n in ISLANDS.items()]}

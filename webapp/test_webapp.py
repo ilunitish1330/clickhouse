@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Role and data-scope checks for the web app, against the real ClickHouse `ub` data.
 
-    python3 webapp/test_webapp.py     # needs ClickHouse with ub loaded; uses a scratch users database
+    python3 webapp/test_webapp.py     # needs ClickHouse with ub loaded; uses its own users database (puc_app_test)
 
 Every rule is checked at the API, where it is enforced -- the browser only
 hides what the API already refuses.
@@ -13,12 +13,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent), str(HERE)]
 os.environ["APP_DEFAULT_PASSWORD"] = "Test-pass-1"
+os.environ["APP_DB"] = "puc_app_test"  # never touch the real users
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
 
-server.ch("DROP DATABASE IF EXISTS puc_app")  # fresh users, seeded on startup
+server.ch("DROP DATABASE IF EXISTS puc_app_test")  # fresh users, seeded on startup
 PW = "Test-pass-1"
 
 
@@ -108,7 +109,7 @@ def main() -> None:
     assert ceo.post("/api/me/password", json={"current": PW, "new": "Another-pass-2"}).status_code == 200
     assert not login("ceo", "Another-pass-2").get("/api/me").json()["must_change"]
 
-    server.ch("DROP DATABASE puc_app")
+    server.ch("DROP DATABASE puc_app_test")
     print("ok")
 
 

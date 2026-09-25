@@ -105,17 +105,50 @@
     return chips.length ? `<div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join("")}</div>` : "";
   }
 
-  function tileHtml(t) {
+  const TILE_ICON = { money: "coin", qty: "pulse", rate: "tag", pct: "percent", count: "users" };
+
+  function tileHtml(t, i) {
     const f = fmt(t.value, t.fmt, t.unit);
     const empty = t.value === null;
-    const valueHtml = empty ? "—" : t.fmt === "money" ? `<small style="margin:0 4px 0 0">${CURRENCY}</small>${esc(f.text)}` : `${esc(f.text)}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}`;
+    const valueHtml = empty ? "—" : t.fmt === "money" ? `<small class="cur">${CURRENCY}</small>${esc(f.text)}` : `${esc(f.text)}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}`;
+    const hasPrev = t.previous !== null && t.previous !== undefined && t.value !== null && t.previous !== 0;
     let foot = "";
     if (empty && (t.fmt === "qty" || t.fmt === "rate")) foot = `<div class="hint">Pick one utility to see this</div>`;
-    else if (t.previous !== null && t.previous !== undefined && t.value !== null && t.previous !== 0) {
+    else if (hasPrev) {
       const ch = (t.value - t.previous) / Math.abs(t.previous);
-      foot = `<div class="delta">${icon(ch >= 0 ? "up" : "down")}<b>${Math.abs(ch * 100).toFixed(1)}%</b> vs ${esc(t.previous_label)}</div>`;
+      foot = `<div class="delta"><span class="delta-pill ${ch >= 0 ? "up" : "down"}">${icon(ch >= 0 ? "up" : "down")}${Math.abs(ch * 100).toFixed(1)}%</span> vs ${esc(t.previous_label)}</div>`;
     }
-    return `<div class="tile ${empty ? "empty" : ""}"><div class="label">${esc(t.label)}</div><div class="value">${valueHtml}</div>${foot}</div>`;
+    const hero = i === 0 && !empty;
+    let compare = "";
+    if (hero && hasPrev) {  // the headline number against the previous period, as two bars
+      const mx = Math.max(Math.abs(t.value), Math.abs(t.previous)) || 1;
+      const row = (label, v, cls) => `<div class="cmp-row"><span>${esc(label)}</span><div class="cmp-track"><div class="cmp-bar ${cls}" style="width:${(Math.abs(v) / mx) * 100}%"></div></div><b>${esc(fmt(v, t.fmt, t.unit).text)}</b></div>`;
+      compare = `<div class="cmp">${row(t.previous_label, t.previous, "prev")}${row(periodName(), t.value, "cur")}</div>`;
+    }
+    return `<div class="tile ${empty ? "empty" : ""} ${hero ? "hero" : ""}">
+      <div class="tile-top"><div class="label">${esc(t.label)}</div><span class="tile-ic">${icon(TILE_ICON[t.fmt] || "grid")}</span></div>
+      <div class="value">${valueHtml}</div>${compare}${foot}</div>`;
+  }
+  const periodName = () => (state.me.filters.periods.find((p) => p.period === state.filters.period) || {}).period_label || "Selected";
+
+  /* one sentence per chart: what a reader should notice first */
+  function insight(c) {
+    if (c.note || !c.rows.length || c.kind === "grouped") return "";
+    const m = c.metrics[0];
+    if (!["money", "qty"].includes(m.fmt) || c.rows.length < 2) return "";
+    const vals = c.rows.map((r) => r.values[0] || 0);
+    const total = vals.reduce((a, b) => a + b, 0);
+    if (total <= 0 || vals.some((v) => v < 0)) return "";
+    if (c.dim_label === "Period") {
+      const a = vals[vals.length - 2], b = vals[vals.length - 1];
+      if (!a) return "";
+      const ch = (b - a) / Math.abs(a);
+      return `${esc(c.rows[c.rows.length - 1].label)} is ${ch >= 0 ? "up" : "down"} <b>${Math.abs(ch * 100).toFixed(1)}%</b> on ${esc(c.rows[c.rows.length - 2].label)}`;
+    }
+    let bi = 0; vals.forEach((v, i) => { if (v > vals[bi]) bi = i; });
+    const share = vals[bi] / total;
+    const limited = c.rows.length >= 12 ? " of the top " + c.rows.length : "";
+    return `<b>${esc(c.rows[bi].label)}</b> accounts for <b>${Math.round(share * 100)}%</b>${limited}`;
   }
 
   async function dashboard(pageId) {
@@ -123,9 +156,17 @@
     if (!page) return notAllowed();
     const main = shell(pageId);
     const periodLabel = () => (state.me.filters.periods.find((p) => p.period === state.filters.period) || {}).period_label || "All periods";
+    const accent = { 1: "elec", 2: "sewer", 3: "water" }[page.utility] || "brand";
+    const ps = state.me.filters.periods;
+    const coverage = ps.length ? `${icon("check")} Data: ${esc(ps[0].period_label)}${ps.length > 1 ? " – " + esc(ps[ps.length - 1].period_label) : ""}` : "";
     main.innerHTML = mobileTop(page.title) + `
-      <div class="topbar"><div><h1>${esc(page.title)}</h1><p class="subtitle" id="subtitle">&nbsp;</p>${scopeChips(page)}</div>${filterBar(page)}</div>
-      <div id="dash"><div class="tiles">${"<div class='skeleton'></div>".repeat(4)}</div></div>`;
+      <header class="hero-head accent-${accent}">
+        <div class="hero-title"><span class="hero-ic">${icon(page.icon)}</span>
+          <div><h1>${esc(page.title)}</h1><p class="subtitle" id="subtitle">&nbsp;</p>
+          <div class="chips">${coverage ? `<span class="chip soft">${coverage}</span>` : ""}${scopeChips(page).replace(/^<div class="chips">|<\/div>$/g, "")}</div></div></div>
+        ${filterBar(page)}
+      </header>
+      <div id="dash" class="accent-${accent}"><div class="tiles">${"<div class='skeleton'></div>".repeat(4)}</div></div>`;
     const onChange = () => {
       state.filters.period = main.querySelector("#f-period").value;
       state.filters.region = +(main.querySelector("#f-region")?.value || 0);
@@ -143,11 +184,15 @@
       catch (err) { dash.innerHTML = `<div class="note">${icon("x")} ${esc(err.message)}</div>`; dash.classList.remove("loading"); return; }
       if (d.empty) return noData(dash);
       main.querySelector("#subtitle").textContent = `${d.subtitle} · ${periodLabel()}`;
-      dash.innerHTML = `<div class="tiles">${d.tiles.map(tileHtml).join("")}</div>
+      const slots = d.tiles.length + (d.tiles[0] && d.tiles[0].value !== null ? 1 : 0);  // the headline tile is two wide
+      const cols = slots > 6 ? Math.ceil(slots / 2) : slots;  // too many for one row: two rows
+      const fill = slots > 6 ? cols * 2 - slots : 0;  // the last tile stretches over any gap
+      dash.innerHTML = `<div class="tiles${fill ? " fill" : ""}" style="--cols:${cols};--fill:${fill + 1}">${d.tiles.map((t, i) => tileHtml(t, i)).join("")}</div>
         <div class="grid">${d.charts.map((c, i) => `
           <section class="card ${c.wide || c.kind === "table" && c.metrics.length > 3 ? "wide" : ""}">
             <div class="card-head"><div><h3>${esc(c.title)}</h3><div class="meta">${c.all_periods ? "All periods" : esc(periodLabel())}${c.unit && c.metrics.some((m) => m.fmt === "qty") ? " · " + esc(c.unit) : ""}${c.metrics.some((m) => m.fmt === "money") ? " · " + CURRENCY : ""}</div></div>
             ${c.kind !== "table" && !c.note ? `<button class="btn small ghost" data-toggle="${i}" aria-label="Switch between chart and table">${icon(state.tableView[pageId + i] ? "chart" : "table")}${state.tableView[pageId + i] ? "Chart" : "Table"}</button>` : ""}</div>
+            ${insight(c) ? `<div class="insight">${icon("spark")}<span>${insight(c)}</span></div>` : ""}
             <div class="card-body" id="c${i}"></div></section>`).join("")}</div>`;
       d.charts.forEach((c, i) => {
         const el = dash.querySelector(`#c${i}`);

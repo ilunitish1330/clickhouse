@@ -119,7 +119,7 @@
         const v = val(cat, s); if (v === null) return;
         const x = x0 + j * (barW + 2), y0 = y(0), y1 = y(v), h = Math.max(Math.abs(y0 - y1), v ? 1 : 0);
         const top = Math.min(y0, y1), r = Math.min(4, barW / 2, h);
-        const color = grouped ? seriesColor(s, j) : "var(--s1)";
+        const color = grouped ? seriesColor(s, j) : "var(--accent, var(--s1))";
         const lines = grouped ? series.map((ss, k) => [ss, fmtText(val(cat, ss), m.fmt, c.unit, false), seriesColor(ss, k)])
                               : [[m.label, fmtText(v, m.fmt, c.unit, false)]];
         const row = c.rows.find((rr) => rr.label === cat);
@@ -153,12 +153,17 @@
       head.push(`<th class="n">${esc(m.label)}${m.fmt === "qty" && c.unit ? ` (${esc(c.unit)})` : ""}</th>`);
       if (c.share.includes(m.key)) head.push(`<th class="n">Share</th>`);
     });
+    // an in-cell bar on the first measure, so a table still reads at a glance
+    const m0 = c.metrics[0], firstVals = c.rows.map((r) => r.values[0] || 0);
+    const barMax = ["money", "qty", "count"].includes(m0.fmt) && firstVals.every((v) => v >= 0) ? Math.max(...firstVals) : 0;
     const body = c.rows.map((r) => {
       const cells = [`<td>${esc(r.label)}</td>`];
       if (c.series_label) cells.push(`<td>${esc(r.series)}</td>`);
       c.metrics.forEach((m, i) => {
         const f = fmt(r.values[i], m.fmt, c.unit, false);
-        cells.push(`<td class="n">${esc(m.fmt === "money" && f.text !== "—" ? f.text : m.fmt === "rate" ? f.text : f.text)}</td>`);
+        cells.push(i === 0 && barMax > 0
+          ? `<td class="n barcell"><div class="cellwrap"><span class="celltrack"><span class="cellbar" style="width:${((r.values[0] || 0) / barMax) * 100}%"></span></span><span>${esc(f.text)}</span></div></td>`
+          : `<td class="n">${esc(f.text)}</td>`);
         if (c.share.includes(m.key)) cells.push(`<td class="n share">${esc(fmtText(r.shares?.[i], "pct"))}</td>`);
       });
       return `<tr>${cells.join("")}</tr>`;
