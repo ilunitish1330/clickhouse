@@ -199,6 +199,7 @@
             <button class="btn primary" id="run" disabled>${icon("pulse")}Run</button>
             <button class="btn" id="rebuild" title="Rebuild aggregates from what is already loaded">Rebuild aggregates only</button>
           </div>
+          <div class="eta" id="eta" hidden><div class="eta-row"><span id="eta-text"></span><span id="eta-left"></span></div><div class="eta-track"><div class="eta-bar" id="eta-bar"></div></div></div>
           <div class="console" id="console" hidden></div>
         </section>` : ""}
         <section class="card ${run ? "" : "wide"}">
@@ -211,6 +212,7 @@
     let file = null;
     const pick = (f) => {
       file = f;
+      if (!f && main.querySelector("#file")) main.querySelector("#file").value = "";  // so the same file can be chosen again
       main.querySelector("#picked").innerHTML = f ? `<div class="file-pill"><span>${icon("table")} <b>${esc(f.name)}</b> <span class="pill">${(f.size / 1e6).toFixed(1)} MB</span></span><button class="btn small ghost" id="unpick" aria-label="Remove file">${icon("x")}</button></div>` : "";
       main.querySelector("#run").disabled = !f;
       main.querySelector("#unpick")?.addEventListener("click", (e) => { e.preventDefault(); pick(null); });
@@ -240,6 +242,24 @@
         const i = +el.dataset.s; el.classList.toggle("on", i === n && !done); el.classList.toggle("done", i < n || !!done);
       });
     }
+    const clock = (s) => { s = Math.max(0, Math.round(s)); return s >= 60 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s` : `${s} s`; };
+    function showEta(j) {
+      const box = main.querySelector("#eta"); if (!box) return;
+      box.hidden = false;
+      const el = j.elapsed || 0, est = j.estimate || 0;
+      if (j.status === "running") {
+        const left = est - el;
+        // time-based bar, held short of full until the job really finishes
+        main.querySelector("#eta-bar").style.width = Math.min(95, (el / Math.max(est, 1)) * 100) + "%";
+        main.querySelector("#eta-text").textContent = `Elapsed ${clock(el)}`;
+        main.querySelector("#eta-left").textContent = left > 2 ? `about ${clock(left)} left` : "finishing…";
+      } else {
+        main.querySelector("#eta-bar").style.width = "100%";
+        main.querySelector("#eta-bar").classList.toggle("failed", j.status === "failed");
+        main.querySelector("#eta-text").textContent = `${j.status === "done" ? "Finished" : "Stopped"} in ${clock(el)}`;
+        main.querySelector("#eta-left").textContent = "";
+      }
+    }
     function watch(job) {
       status("running"); main.querySelector("#run").disabled = true; main.querySelector("#rebuild").disabled = true;
       clearInterval(poll);
@@ -248,6 +268,7 @@
         const text = j.log.join("\n"), c = main.querySelector("#console");
         if (!c) return clearInterval(poll);
         c.textContent = text || "Starting…"; c.scrollTop = c.scrollHeight;
+        showEta(j);
         setSteps(/aggregates rebuilt/.test(text) ? 4 : /rebuilding dimensions|rows read/.test(text) ? 3 : /rows staged/.test(text) ? 2 : 1, j.status === "done");
         if (j.status !== "running") {
           clearInterval(poll); status(j.status);

@@ -82,6 +82,9 @@ def init_store() -> None:
             salt String, pw_hash String, must_change UInt8, active UInt8,
             updated_at DateTime64(3) DEFAULT now64(3))
           ENGINE = ReplacingMergeTree(updated_at) ORDER BY username""")
+    ch("""CREATE TABLE IF NOT EXISTS puc_app.load_timings (
+            ts DateTime DEFAULT now(), kind LowCardinality(String), bytes UInt64, seconds Float32)
+          ENGINE = MergeTree ORDER BY ts""")
     ch("""CREATE TABLE IF NOT EXISTS puc_app.audit (
             ts DateTime DEFAULT now(), username String, action LowCardinality(String), detail String)
           ENGINE = MergeTree ORDER BY ts""")
@@ -229,6 +232,25 @@ JOBS: dict[str, dict] = {}
 JOB_LOCK = threading.Lock()
 
 
+# First guesses until this server has timed a few loads of its own.
+DEFAULT_SECONDS_PER_MB, DEFAULT_REBUILD_SECONDS = 3.0, 8.0
+
+
+def estimate(kind: str, size: int) -> float:
+    """Seconds a job should take, from the last 10 jobs of its kind on this server."""
+    try:
+        rows = q(f"SELECT bytes, seconds FROM puc_app.load_timings WHERE kind = {esc(kind)} "
+                 f"ORDER BY ts DESC LIMIT 10")
+    except Exception:
+        rows = []
+    if kind == "rebuild":
+        secs = sorted(float(r["seconds"]) for r in rows)
+        return secs[len(secs) // 2] if secs else DEFAULT_REBUILD_SECONDS
+    rates = sorted(float(r["seconds"]) / max(int(r["bytes"]), 1) for r in rows)
+    rate = rates[len(rates) // 2] if rates else DEFAULT_SECONDS_PER_MB / 1e6
+    return max(5.0, rate * size)
+
+
 def run_job(job_id: str, args: list[str]) -> None:
     job = JOBS[job_id]
     try:
@@ -242,16 +264,24 @@ def run_job(job_id: str, args: list[str]) -> None:
         job["status"] = "failed"
     finally:
         job["finished"] = datetime.now().isoformat(timespec="seconds")
+        job["elapsed"] = round(time.time() - job["t0"], 1)
+        if job["status"] == "done":
+            try:
+                ch(f"INSERT INTO puc_app.load_timings (kind, bytes, seconds) VALUES "
+                   f"({esc(job['kind'])}, {int(job['bytes'])}, {job['elapsed']})")
+            except Exception:
+                pass
         audit(job["user"], "load_" + job["status"], job["file"])
         JOB_LOCK.release()
 
 
-def start_job(user: dict, label: str, args: list[str]) -> dict:
+def start_job(user: dict, label: str, args: list[str], kind: str = "load", size: int = 0) -> dict:
     if not JOB_LOCK.acquire(blocking=False):
         raise HTTPException(409, "A load is already running -- wait for it to finish")
     job_id = secrets.token_hex(6)
     JOBS[job_id] = {"id": job_id, "status": "running", "file": label, "user": user["username"],
-                    "started": datetime.now().isoformat(timespec="seconds"), "finished": None, "log": []}
+                    "started": datetime.now().isoformat(timespec="seconds"), "finished": None, "log": [],
+                    "kind": kind, "bytes": size, "t0": time.time(), "estimate": round(estimate(kind, size), 1)}
     threading.Thread(target=run_job, args=(job_id, args), daemon=True).start()
     audit(user["username"], "load_started", label)
     return {"job": job_id}
@@ -269,7 +299,7 @@ async def load(request: Request, file: UploadFile = File(...)):
     with open(dest, "wb") as f:
         while chunk := await file.read(1 << 20):
             f.write(chunk)
-    return start_job(user, name, [str(dest)])
+    return start_job(user, name, [str(dest)], "load", dest.stat().st_size)
 
 
 @app.post("/api/rebuild")
@@ -277,7 +307,7 @@ def rebuild(request: Request):
     user = current_user(request)
     if not ROLES[user["role"]].can_load:
         raise HTTPException(403, "Your role cannot run the pipeline")
-    return start_job(user, "(rebuild aggregates)", ["--aggregates"])
+    return start_job(user, "(rebuild aggregates)", ["--aggregates"], "rebuild")
 
 
 @app.get("/api/load/{job_id}")
@@ -285,7 +315,10 @@ def job(job_id: str, request: Request):
     current_user(request)
     if job_id not in JOBS:
         raise HTTPException(404, "No such job")
-    return JOBS[job_id]
+    job = JOBS[job_id]
+    if job["status"] == "running":
+        job["elapsed"] = round(time.time() - job["t0"], 1)
+    return job
 
 
 @app.get("/api/loads")
