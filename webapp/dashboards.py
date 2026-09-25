@@ -215,6 +215,30 @@ def periods() -> list[dict]:
     return rows
 
 
+SECTORS = ("Domestic", "Commercial", "Government", "Other")
+
+# Chart dimensions a click can turn into a page filter: dim -> (filter key, column holding its value)
+FILTER_DIMS = {"region_name": ("region", "region_code"), "utility_name": ("utility", "utility_code"),
+               "sector_type": ("sector", "sector_type"), "tariff_desc": ("tariff", "tariff_desc"),
+               "period_label": ("period", "period")}
+
+
+def sql_str(v: str) -> str:
+    return "'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def tariffs(scope: dict) -> list[dict]:
+    """Tariff groups this user can see, biggest first, with the utilities each belongs to."""
+    where = f"utility_code IN ({','.join(str(u) for u in scope['utilities']) or 'NULL'})"
+    if scope["region"]:
+        where += f" AND region_code = {int(scope['region'])}"
+    try:
+        return run(f"SELECT tariff_desc AS name, groupUniqArray(utility_code) AS utilities FROM ub.app_billing "
+                   f"WHERE {where} AND tariff_desc != '' GROUP BY tariff_desc ORDER BY sum(amount) DESC")
+    except Exception:
+        return []
+
+
 def scope_where(scope: dict, sel: dict, page_utility, *, all_periods=False) -> str:
     """scope = what the user may see; sel = what they picked (already validated)."""
     utils = set(scope["utilities"])
@@ -228,6 +252,10 @@ def scope_where(scope: dict, sel: dict, page_utility, *, all_periods=False) -> s
         conds.append(f"region_code = {int(region)}")
     if sel.get("period") and not all_periods:
         conds.append(f"period = '{sel['period']}'")
+    if sel.get("sector"):
+        conds.append(f"sector_type = {sql_str(sel['sector'])}")
+    if sel.get("tariff"):
+        conds.append(f"tariff_desc = {sql_str(sel['tariff'])}")
     return " AND ".join(conds)
 
 
@@ -247,7 +275,9 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
         return {"empty": True}
     by_period = {p["period"]: p for p in plist}
     prev_period = None
-    if sel.get("period"):
+    if sel.get("period") and sel.get("compare") and sel["compare"] != sel["period"]:
+        prev_period = None if sel["compare"] == "none" else sel["compare"]
+    elif sel.get("period"):
         idx = int(by_period[sel["period"]]["period_index"])
         prev_period = next((p["period"] for p in plist if int(p["period_index"]) == idx - 1), None)
 
@@ -281,7 +311,14 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
         if c["dim"] == "period_label":  # periods need their order and label from pbi_period
             dim_sql = "toString(period) AS d0"
         cols = ", ".join(f"{METRICS[m][2]} AS m{i}" for i, m in enumerate(c["metrics"]))
-        where = scope_where(scope, sel, pu, all_periods=c["all_periods"])
+        fkey = FILTER_DIMS.get(c["dim"])
+        if fkey and ((fkey[0] == "utility" and (pu or len(scope["utilities"]) < 2)) or (fkey[0] == "region" and scope["region"])):
+            fkey = None  # nothing to narrow: the page or the role already fixes it
+        if fkey:
+            cols += f", any(toString({fkey[1]})) AS fk"
+        # the chart a filter is picked from keeps all its bars (the pick is highlighted), like a cross-filter
+        csel = {**sel, fkey[0]: None} if fkey else sel
+        where = scope_where(scope, csel, pu, all_periods=c["all_periods"])
         group = ", ".join(f"d{i}" for i in range(len(dims)))
         if c["sort"] == "dim":
             order_by = group
@@ -307,6 +344,8 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
             row = {"label": _pretty(c["dim"], label), "values": [num(r[f"m{i}"]) for i in range(len(c["metrics"]))]}
             if c["series"]:
                 row["series"] = _pretty(c["series"], r["d1"])
+            if fkey and r.get("fk") not in (None, ""):
+                row["filter"] = {"key": fkey[0], "value": r["fk"]}
             if c["share"]:
                 row["shares"] = [(row["values"][i] / total[m]) if (m in c["share"] and total.get(m)) else None
                                  for i, m in enumerate(c["metrics"])]
@@ -318,7 +357,7 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
             "metrics": [{"key": m, "label": METRICS[m][0], "fmt": METRICS[m][3]} for m in c["metrics"]],
             "share": c["share"], "unit": unit, "rows": out_rows,
             "note": c["note"] if needs_unit and not unit else None,
-            "all_periods": c["all_periods"],
+            "all_periods": c["all_periods"], "filter_key": fkey[0] if fkey else None,
         })
     return {"title": page["title"], "subtitle": page["subtitle"], "tiles": tiles, "charts": charts}
 

@@ -206,12 +206,15 @@ def me(request: Request):
             "regions": [{"code": c, "name": n} for c, n in ISLANDS.items() if c and (not scope["region"] or c == scope["region"])],
             "region_locked": bool(scope["region"]),
             "utilities": [{"code": u, "name": names[u]} for u in scope["utilities"]],
+            "sectors": list(dashboards.SECTORS),
+            "tariffs": dashboards.tariffs(scope),
         },
     }
 
 
 @app.get("/api/page/{page_id}")
-def page(page_id: str, request: Request, period: str = "", region: int = 0, utility: int = 0):
+def page(page_id: str, request: Request, period: str = "", region: int = 0, utility: int = 0,
+         sector: str = "", tariff: str = "", compare: str = ""):
     user = current_user(request)
     if page_id not in dashboards.PAGES:
         raise HTTPException(404, "No such page")
@@ -220,7 +223,10 @@ def page(page_id: str, request: Request, period: str = "", region: int = 0, util
     valid_periods = {p["period"] for p in dashboards.periods()}
     sel = {"period": period if period in valid_periods else None,
            "region": region if region in (1, 2, 3) else None,
-           "utility": utility if utility in scope["utilities"] else None}
+           "utility": utility if utility in scope["utilities"] else None,
+           "sector": sector if sector in dashboards.SECTORS else None,
+           "tariff": tariff if tariff and tariff in {t["name"] for t in dashboards.tariffs(scope)} else None,
+           "compare": compare if compare == "none" or compare in valid_periods else None}
     pu = dashboards.PAGES[page_id]["utility"]
     if pu and pu not in scope["utilities"]:
         raise HTTPException(403, "Your role does not include this utility")

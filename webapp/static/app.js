@@ -2,7 +2,8 @@
 (function () {
   const { render, fmt, esc, CURRENCY } = window.PUCCharts;
   const app = document.getElementById("app");
-  const state = { me: null, filters: { period: "", region: 0, utility: 0 }, tableView: {}, lastPage: null };
+  const state = { me: null, filters: { period: "", region: 0, utility: 0, sector: "", tariff: "", compare: "" }, tableView: {}, lastPage: null };
+  const routeId = () => location.hash.replace(/^#\//, "").split("?")[0];
   const icon = (id, cls = "i") => `<svg class="${cls}"><use href="#i-${id}"/></svg>`;
 
   async function api(path, opts = {}) {
@@ -92,12 +93,65 @@
   const mobileTop = (title) => `<div class="mobile-top"><button class="btn small" onclick="document.getElementById('side').classList.toggle('open')" aria-label="Menu">${icon("menu")}</button><b>${esc(title)}</b></div>`;
 
   // ------------------------------------------------------------------ dashboards
+  // ------------------------------------------------------------------ filters
+  const pageUtils = (page) => page.utility ? [page.utility] : state.filters.utility ? [state.filters.utility] : state.me.filters.utilities.map((u) => u.code);
+  const tariffInfo = (name) => state.me.filters.tariffs.find((t) => t.name === name);
+  // a tariff group picked on another page only applies where its utility is shown
+  const tariffApplies = (page) => { const t = tariffInfo(state.filters.tariff); return !!t && t.utilities.some((u) => pageUtils(page).includes(+u)); };
+  const periodText = (p) => (state.me.filters.periods.find((x) => x.period === p) || {}).period_label || p;
+  const UTIL_NAMES = { 1: "Electricity", 2: "Sewerage", 3: "Water" };
+
   function filterBar(page) {
     const f = state.me.filters, s = state.filters;
-    const periods = [`<option value="">All periods</option>`].concat(f.periods.slice().reverse().map((p) => `<option value="${p.period}" ${s.period === p.period ? "selected" : ""}>${esc(p.period_label)}</option>`)).join("");
-    const regions = f.region_locked ? "" : `<div class="sep"></div><label>Island<select id="f-region"><option value="0">All islands</option>${f.regions.map((r) => `<option value="${r.code}" ${+s.region === r.code ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>`;
-    const utils = page.utility || f.utilities.length < 2 ? "" : `<div class="sep"></div><label>Utility<select id="f-utility"><option value="0">All utilities</option>${f.utilities.map((u) => `<option value="${u.code}" ${+s.utility === u.code ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></label>`;
-    return `<div class="filters"><label>Period<select id="f-period">${periods}</select></label>${regions}${utils}</div>`;
+    const opt = (v, label, cur) => `<option value="${esc(String(v))}" ${String(cur) === String(v) ? "selected" : ""}>${esc(label)}</option>`;
+    const periods = opt("", "All periods", s.period) + f.periods.slice().reverse().map((p) => opt(p.period, p.period_label, s.period)).join("");
+    const field = (id, label, inner, extra = "") => `<div class="sep"></div><label ${extra}>${label}<select id="${id}">${inner}</select></label>`;
+    const others = f.periods.filter((p) => p.period !== s.period);
+    const compare = s.period && others.length ? field("f-compare", "Compare with",
+      opt("", "Previous period", s.compare) + others.slice().reverse().map((p) => opt(p.period, p.period_label, s.compare)).join("") + opt("none", "No comparison", s.compare)) : "";
+    const regions = f.region_locked ? "" : field("f-region", "Island", opt(0, "All islands", s.region) + f.regions.map((r) => opt(r.code, r.name, s.region)).join(""));
+    const utils = page.utility || f.utilities.length < 2 ? "" : field("f-utility", "Utility", opt(0, "All utilities", s.utility) + f.utilities.map((u) => opt(u.code, u.name, s.utility)).join(""));
+    const sectors = field("f-sector", "Sector", opt("", "All sectors", s.sector) + f.sectors.map((x) => opt(x, x, s.sector)).join(""));
+    const shown = pageUtils(page);
+    const groups = shown.map((u) => {
+      const list = f.tariffs.filter((t) => t.utilities.map(Number).includes(u));
+      return list.length ? `<optgroup label="${esc(UTIL_NAMES[u])}">${list.map((t) => opt(t.name, t.name, tariffApplies(page) ? s.tariff : "")).join("")}</optgroup>` : "";
+    }).join("");
+    const tariffs = field("f-tariff", "Tariff group", opt("", "All tariff groups", "") + groups, `class="wide-sel"`);
+    return `<div class="filters" id="filters"><label>Period<select id="f-period">${periods}</select></label>${compare}${regions}${utils}${sectors}${tariffs}</div>`;
+  }
+
+  // the filters in effect, as removable chips
+  function activeChips(page) {
+    const f = state.me.filters, s = state.filters, chips = [];
+    const chip = (key, label, value, off) => chips.push(`<button class="fchip${off ? " off" : ""}" data-clear="${key}" title="${off ? "Not used on this page. " : ""}Remove this filter">
+      <span>${esc(label)}</span><b>${esc(value)}</b>${off ? `<span>· not on this page</span>` : ""}${icon("x")}</button>`);
+    if (s.region && !f.region_locked) chip("region", "Island", (f.regions.find((r) => r.code === +s.region) || {}).name || s.region);
+    if (s.utility && !page.utility) chip("utility", "Utility", UTIL_NAMES[s.utility]);
+    if (s.sector) chip("sector", "Sector", s.sector);
+    if (s.tariff) chip("tariff", "Tariff group", s.tariff, !tariffApplies(page));
+    if (s.period && s.compare) chip("compare", "Compared with", s.compare === "none" ? "nothing" : periodText(s.compare));
+    if (!chips.length) return `<div class="active-filters empty"><p class="af-hint">${icon("spark")}Tip: click a bar in any chart marked <span class="pk-dot"></span> to filter the page by it.</p></div>`;
+    return `<div class="active-filters"><span class="af-label">Filtered by</span>${chips.join("")}${chips.length > 1 ? `<button class="btn small ghost" data-clear="all">Clear all</button>` : ""}</div>`;
+  }
+
+  // keep the filters in the address, so a filtered view can be bookmarked, reloaded or shared
+  function writeUrl(pageId) {
+    const s = state.filters, q = new URLSearchParams();
+    Object.entries(s).forEach(([k, v]) => { if (v && !(k === "compare" && !s.period)) q.set(k, v); });
+    const h = `#/${pageId}${q.toString() ? "?" + q : ""}`;
+    if (location.hash !== h) history.replaceState(null, "", h);
+  }
+  function readUrl() {
+    const q = new URLSearchParams(location.hash.split("?")[1] || "");
+    if (![...q.keys()].length) return;
+    const f = state.me.filters, s = state.filters;
+    if (q.has("period")) s.period = f.periods.some((p) => p.period === q.get("period")) ? q.get("period") : "";
+    s.region = f.regions.some((r) => r.code === +q.get("region")) ? +q.get("region") : 0;
+    s.utility = f.utilities.some((u) => u.code === +q.get("utility")) ? +q.get("utility") : 0;
+    s.sector = f.sectors.includes(q.get("sector")) ? q.get("sector") : "";
+    s.tariff = tariffInfo(q.get("tariff")) ? q.get("tariff") : "";
+    s.compare = q.get("compare") === "none" || f.periods.some((p) => p.period === q.get("compare")) ? q.get("compare") : "";
   }
 
   function scopeChips(page) {
@@ -147,6 +201,10 @@
       const ch = (b - a) / Math.abs(a);
       return `${esc(c.rows[c.rows.length - 1].label)} is ${ch >= 0 ? "up" : "down"} <b>${Math.abs(ch * 100).toFixed(1)}%</b> on ${esc(c.rows[c.rows.length - 2].label)}`;
     }
+    const pi = c.picked != null && c.picked !== "" ? c.rows.findIndex((r) => r.filter && String(r.filter.value) === String(c.picked)) : -1;
+    if (pi >= 0 && c.dim_label !== "Period") {  // a picked bar: say where it stands
+      return `<b>${esc(c.rows[pi].label)}</b> is <b>${Math.round((vals[pi] / total) * 100)}%</b> of the total here, ranked ${pi === vals.indexOf(Math.max(...vals)) ? "first" : `#${[...vals].sort((a, b) => b - a).indexOf(vals[pi]) + 1} of ${vals.length}`}`;
+    }
     let bi = 0; vals.forEach((v, i) => { if (v > vals[bi]) bi = i; });
     const share = vals[bi] / total;
     const limited = c.rows.length >= 12 ? " of the top " + c.rows.length : "";
@@ -166,33 +224,64 @@
         <div class="hero-title"><span class="hero-ic">${icon(page.icon)}</span>
           <div><h1>${esc(page.title)}</h1><p class="subtitle" id="subtitle">&nbsp;</p>
           <div class="chips">${coverage ? `<span class="chip soft">${coverage}</span>` : ""}${scopeChips(page).replace(/^<div class="chips">|<\/div>$/g, "")}</div></div></div>
-        ${filterBar(page)}
+        <div class="filter-zone" id="filter-zone"></div>
       </header>
       <div id="dash" class="accent-${accent}"><div class="tiles">${"<div class='skeleton'></div>".repeat(4)}</div></div>`;
-    const onChange = () => {
-      state.filters.period = main.querySelector("#f-period").value;
-      state.filters.region = +(main.querySelector("#f-region")?.value || 0);
-      state.filters.utility = +(main.querySelector("#f-utility")?.value || 0);
-      load();
-    };
-    main.querySelectorAll(".filters select").forEach((s) => s.addEventListener("change", onChange));
+    const zone = main.querySelector("#filter-zone");
+    function drawFilters() {
+      zone.innerHTML = filterBar(page) + activeChips(page);
+      zone.querySelectorAll(".filters select").forEach((sel) => sel.addEventListener("change", onChange));
+      zone.querySelectorAll("[data-clear]").forEach((b) => b.addEventListener("click", () => {
+        const k = b.dataset.clear, s = state.filters;
+        if (k === "all") Object.assign(s, { region: state.me.filters.region_locked ? s.region : 0, utility: 0, sector: "", tariff: "", compare: "" });
+        else s[k] = typeof s[k] === "number" ? 0 : "";
+        refresh();
+      }));
+    }
+    function onChange(e) {
+      const s = state.filters, v = e.target.value;
+      switch (e.target.id) {
+        case "f-period": s.period = v; s.compare = ""; break;  // a comparison belongs to the period it was picked for
+        case "f-compare": s.compare = v; break;
+        case "f-region": s.region = +v; break;
+        case "f-utility": s.utility = +v; break;
+        case "f-sector": s.sector = v; break;
+        case "f-tariff": s.tariff = v; break;
+      }
+      refresh();
+    }
+    function refresh() { drawFilters(); load(); }
+    // a click on a chart bar arrives here as a filter; clicking the picked bar again clears it
+    main.addEventListener("chart-filter", (e) => {
+      const { key, value } = e.detail, s = state.filters;
+      const val = key === "region" || key === "utility" ? +value : value;
+      s[key] = String(s[key]) === String(val) ? (typeof s[key] === "number" ? 0 : "") : val;
+      if (key === "period") s.compare = "";
+      refresh();
+    });
+    drawFilters();
 
     async function load() {
       const dash = main.querySelector("#dash");
       dash.classList.add("loading");
-      const qs = new URLSearchParams({ period: state.filters.period, region: state.filters.region, utility: page.utility ? 0 : state.filters.utility });
+      const s = state.filters;
+      writeUrl(pageId);
+      const qs = new URLSearchParams({ period: s.period, region: s.region, utility: page.utility ? 0 : s.utility, sector: s.sector,
+                                       tariff: tariffApplies(page) ? s.tariff : "", compare: s.period ? s.compare : "" });
       let d;
       try { d = await api(`/api/page/${pageId}?${qs}`); }
       catch (err) { dash.innerHTML = `<div class="note">${icon("x")} ${esc(err.message)}</div>`; dash.classList.remove("loading"); return; }
       if (d.empty) return noData(dash);
       main.querySelector("#subtitle").textContent = `${d.subtitle} · ${periodLabel()}`;
+      const pickedOf = { region: s.region || "", utility: s.utility || "", sector: s.sector, tariff: tariffApplies(page) ? s.tariff : "", period: s.period };
+      d.charts.forEach((c) => { if (c.filter_key) c.picked = pickedOf[c.filter_key]; });
       const slots = d.tiles.length + (d.tiles[0] && d.tiles[0].value !== null ? 1 : 0);  // the headline tile is two wide
       const cols = slots > 6 ? Math.ceil(slots / 2) : slots;  // too many for one row: two rows
       const fill = slots > 6 ? cols * 2 - slots : 0;  // the last tile stretches over any gap
       dash.innerHTML = `<div class="tiles${fill ? " fill" : ""}" style="--cols:${cols};--fill:${fill + 1}">${d.tiles.map((t, i) => tileHtml(t, i)).join("")}</div>
         <div class="grid">${d.charts.map((c, i) => `
           <section class="card ${c.wide || c.kind === "table" && c.metrics.length > 3 ? "wide" : ""}">
-            <div class="card-head"><div><h3>${esc(c.title)}</h3><div class="meta">${c.all_periods ? "All periods" : esc(periodLabel())}${c.unit && c.metrics.some((m) => m.fmt === "qty") ? " · " + esc(c.unit) : ""}${c.metrics.some((m) => m.fmt === "money") ? " · " + CURRENCY : ""}</div></div>
+            <div class="card-head"><div><h3>${esc(c.title)}${c.filter_key ? `<span class="pk-dot" title="Click a bar to filter the page"></span>` : ""}</h3><div class="meta">${c.all_periods ? "All periods" : esc(periodLabel())}${c.unit && c.metrics.some((m) => m.fmt === "qty") ? " · " + esc(c.unit) : ""}${c.metrics.some((m) => m.fmt === "money") ? " · " + CURRENCY : ""}</div></div>
             ${c.kind !== "table" && !c.note ? `<button class="btn small ghost" data-toggle="${i}" aria-label="Switch between chart and table">${icon(state.tableView[pageId + i] ? "chart" : "table")}${state.tableView[pageId + i] ? "Chart" : "Table"}</button>` : ""}</div>
             ${insight(c) ? `<div class="insight">${icon("spark")}<span>${insight(c)}</span></div>` : ""}
             <div class="card-body" id="c${i}"></div></section>`).join("")}</div>`;
@@ -289,7 +378,7 @@
           try { state.me = await api("/api/me"); } catch (e) {}
           const ps = state.me?.filters.periods || []; if (!state.filters.period && ps.length) state.filters.period = ps[ps.length - 1].period;
         }
-        if (location.hash !== "#/load") toast(j.status === "done" ? `${icon("check")}<span><b>${esc(bg.name)}</b> is loaded. The dashboards now show it.</span>`
+        if (routeId() !== "load") toast(j.status === "done" ? `${icon("check")}<span><b>${esc(bg.name)}</b> is loaded. The dashboards now show it.</span>`
                                                                    : `${icon("x")}<span><b>${esc(bg.name)}</b> failed. See Data Load for the log.</span>`, j.status === "done" ? "good" : "bad");
       }
       bgChanged();
@@ -487,7 +576,7 @@
   // ------------------------------------------------------------------ routing
   function route() {
     if (!state.me) return;
-    const id = location.hash.replace(/^#\//, "");
+    const id = routeId();
     if (!id) {
       const first = state.me.pages[0]?.id || (state.me.can_load ? "load" : "");
       location.replace("#/" + first); return;
@@ -512,6 +601,7 @@
     catch (e) { return; }
     const periods = state.me.filters.periods;
     if (!state.filters.period && periods.length) state.filters.period = periods[periods.length - 1].period;
+    readUrl();
     if (!state.routed) { addEventListener("hashchange", route); state.routed = true; }
     route();
     bgResume();

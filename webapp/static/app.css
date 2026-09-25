@@ -381,3 +381,40 @@ td.barcell { min-width: 170px; }
 .toast.gone { opacity: 0; transform: translateY(10px); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } .toast, .bg-bar { transition: none; animation: none; } }
+
+/* ---- filters: full-width strip, active-filter chips, click-to-filter ---- */
+.hero-head .filter-zone { flex-basis: 100%; position: relative; z-index: 1; display: flex; flex-direction: column; gap: 10px; }
+.hero-head .filters { align-self: stretch; }
+.filters label.wide-sel select { max-width: 260px; }
+.filters select { max-width: 200px; text-overflow: ellipsis; }
+.active-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 30px; }
+.active-filters .af-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.active-filters .af-hint { margin: 0; font-size: 13px; color: var(--muted); }
+.active-filters .af-hint svg.i { width: 14px; height: 14px; color: var(--accent, var(--s1)); vertical-align: -2px; margin-right: 6px; }
+.active-filters .af-hint .pk-dot { margin: 0 2px; vertical-align: 1px; }
+.fchip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--accent, var(--s1)) 35%, transparent);
+  background: color-mix(in srgb, var(--accent, var(--s1)) 10%, var(--surface)); color: var(--ink); font: inherit; font-size: 13px; }
+.fchip span { color: var(--ink-2); }
+.fchip b { font-weight: 650; }
+.fchip svg.i { width: 14px; height: 14px; color: var(--ink-2); }
+.fchip:hover { border-color: var(--accent, var(--s1)); }
+.fchip:hover svg.i { color: var(--ink); }
+.fchip.off { opacity: .6; border-style: dashed; background: transparent; }
+.pk-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent, var(--s1)); margin-left: 8px; vertical-align: 3px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, var(--s1)) 20%, transparent); }
+.pickable { cursor: pointer; }
+.row-hit.pickable:hover .lab, .row-hit.picked .lab { color: var(--ink); font-weight: 650; }
+.row-hit.unpicked .bar, .col.unpicked .mark { opacity: .3; }
+.row-hit.unpicked .lab, .row-hit.unpicked .val { color: var(--muted); }
+.col.pickable:hover .mark { filter: brightness(1.08); }
+table.data tr.pickable:hover td { background: var(--surface-2); }
+table.data tr.picked td { background: color-mix(in srgb, var(--accent, var(--s1)) 12%, transparent); font-weight: 600; }
+table.data tr.unpicked td { color: var(--muted); }
+.tooltip .tip-hint { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
+@media (max-width: 860px) {
+  .hero-head .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .hero-head .filters .sep { display: none; }
+  .hero-head .filters label.wide-sel { grid-column: 1 / -1; }
+  .filters label.wide-sel select, .filters select { max-width: none; width: 100%; }
+}

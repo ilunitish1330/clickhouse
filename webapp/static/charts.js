@@ -55,7 +55,7 @@
   }
 
   function tipHtml(title, lines) {
-    return `<b>${esc(title)}</b>` + lines.map(([k, v, color]) =>
+    return `<b>${esc(title)}</b>` + lines.map(([k, v, color]) => v === "" ? `<div class="tip-hint">${esc(k)}</div>` :
       `<div class="row"><span>${color ? `<i style="background:${color}"></i>` : ""}${esc(k)}</span><span>${esc(v)}</span></div>`).join("");
   }
 
@@ -71,7 +71,7 @@
       const left = v < 0 ? zero - w : zero;
       const tipLines = [[m.label, fmtText(v, m.fmt, c.unit, false)]];
       if (r.shares && r.shares[0] != null) tipLines.push(["Share", fmtText(r.shares[0], "pct")]);
-      return `<div class="row-hit" tabindex="0" data-tip="${esc(tipHtml(r.label, tipLines))}">
+      return `<div class="row-hit${pickCls(c, r)}" tabindex="0" data-row="${i}" data-tip="${esc(tipHtml(r.label, withHint(c, tipLines)))}">
         <div class="lab" title="${esc(r.label)}">${esc(r.label)}</div>
         <div class="track">${lo < 0 ? `<div class="zero" style="left:${zero}%"></div>` : ""}
           <div class="bar${v < 0 ? " neg" : ""}" style="left:${left}%;width:0" data-w="${Math.max(w, v ? 0.6 : 0)}%"></div></div>
@@ -128,7 +128,8 @@
         const d = v >= 0
           ? `M${x},${top + h} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${top + h} Z`
           : `M${x},${top} V${top + h - r} Q${x},${top + h} ${x + r},${top + h} H${x + barW - r} Q${x + barW},${top + h} ${x + barW},${top + h - r} V${top} Z`;
-        svg += `<g class="col" tabindex="0" data-tip="${esc(tipHtml(cat, lines))}">
+        const ri = c.rows.findIndex((rr) => rr.label === cat);
+        svg += `<g class="col${pickCls(c, c.rows[ri])}" tabindex="0" data-row="${ri}" data-tip="${esc(tipHtml(cat, withHint(c, lines)))}">
           <rect class="hit" x="${L + i * bandW}" y="${T}" width="${bandW}" height="${ph}"/>
           <path class="mark" d="${d}" style="fill:${color}"/></g>`;
       });
@@ -166,17 +167,42 @@
           : `<td class="n">${esc(f.text)}</td>`);
         if (c.share.includes(m.key)) cells.push(`<td class="n share">${esc(fmtText(r.shares?.[i], "pct"))}</td>`);
       });
-      return `<tr>${cells.join("")}</tr>`;
+      return `<tr class="${pickCls(c, r).trim()}" data-row="${c.rows.indexOf(r)}" ${c.filter_key && r.filter ? `tabindex="0" title="Click to filter the page by ${esc(r.label)}"` : ""}>${cells.join("")}</tr>`;
     }).join("");
     const moneyNote = c.metrics.some((m) => m.fmt === "money") ? ` <span class="meta">Amounts in ${CURRENCY}</span>` : "";
     el.innerHTML = `<div class="tbl-wrap ${c.rows.length > 12 ? "scroll-y" : ""}"><table class="data"><thead><tr>${head.join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
+  // ---------- click a bar / column / row to filter the page by it ----------
+  // c.filter_key names the page filter this chart's dimension drives; c.picked is its current value.
+  function pickCls(c, r) {
+    if (!c.filter_key || !r || !r.filter) return "";
+    if (c.picked == null || c.picked === "") return " pickable";
+    return String(r.filter.value) === String(c.picked) ? " pickable picked" : " pickable unpicked";
+  }
+  function withHint(c, lines) {
+    return c.filter_key ? lines.concat([[c.picked != null && c.picked !== "" ? "Click to pick / clear" : "Click to filter the page", ""]]) : lines;
+  }
+  function bindPick(el, c) {
+    if (!c.filter_key) return;
+    const fire = (node) => {
+      const r = c.rows[+node.dataset.row]; if (!r || !r.filter) return;
+      hideTip();
+      el.dispatchEvent(new CustomEvent("chart-filter", { bubbles: true, detail: r.filter }));
+    };
+    el.querySelectorAll("[data-row]").forEach((node) => {
+      if (!c.rows[+node.dataset.row]?.filter) return;
+      node.addEventListener("click", () => fire(node));
+      node.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(node); } });
+    });
+  }
+
   function render(el, c, asTable) {
     if (!c.rows.length) { el.innerHTML = `<div class="note">No data for this selection.</div>`; return; }
-    if (asTable || c.kind === "table") return table(el, c);
-    if (c.kind === "bar") return hbar(el, c);
-    return columns(el, c);
+    if (asTable || c.kind === "table") table(el, c);
+    else if (c.kind === "bar") hbar(el, c);
+    else columns(el, c);
+    bindPick(el, c);
   }
 
   window.PUCCharts = { render, fmt, fmtText, esc, compact, CURRENCY };
