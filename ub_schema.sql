@@ -160,3 +160,15 @@ CREATE TABLE IF NOT EXISTS ub.build_log
 )
 ENGINE = MergeTree
 ORDER BY ts;
+
+-- Formula builder recipes a reviewer saved to reuse (a rule, an action, formulas), as JSON.
+CREATE TABLE IF NOT EXISTS ub.saved_formulas
+(
+    name       String,
+    spec       String,
+    saved_by   String,
+    saved_at   DateTime64(3) DEFAULT now64(3),
+    deleted    UInt8 DEFAULT 0
+)
+ENGINE = ReplacingMergeTree(saved_at)
+ORDER BY name;

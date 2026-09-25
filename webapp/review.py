@@ -117,8 +117,11 @@ def _merged(batch_id: str) -> str:
 
 
 def rows(batch_id: str, search: str = "", changed: bool = False, page: int = 1, size: int = 50,
-         utility: int = 0, region: int = 0) -> dict:
+         utility: int = 0, region: int = 0, rule: dict | None = None) -> dict:
     conds = ["1"]
+    if rule:  # the formula builder's "Which rows", to see exactly what it matches
+        import formula
+        conds.append(f"({formula.compile_rule(rule)}) AND pending != 'delete'")
     if search.strip():
         s = sql_list([search.strip()])
         conds.append("(" + " OR ".join(f"positionCaseInsensitive({c}, {s}) > 0" for c in SEARCHED) + ")")
@@ -152,8 +155,10 @@ def rows(batch_id: str, search: str = "", changed: bool = False, page: int = 1, 
 
 
 def history(batch_id: str, limit: int = 300) -> list[dict]:
+    # a formula's cell-by-cell entries (bulk_*) stay in the log; its one 'formula' entry stands for them here
     return q(f"SELECT toString(ts) AS ts, line_no, action, column, old_value, new_value, user, revision "
-             f"FROM ub.edit_log WHERE batch_id = {sql_list([batch_id])} ORDER BY ts DESC LIMIT {int(limit)}")
+             f"FROM ub.edit_log WHERE batch_id = {sql_list([batch_id])} AND NOT startsWith(action, 'bulk_') "
+             f"ORDER BY ts DESC LIMIT {int(limit)}")
 
 
 # ---------------------------------------------------------------------------- edits

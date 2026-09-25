@@ -552,7 +552,9 @@
   // Uploads go live as a Draft. A reviewer edits rows here (the edits wait, not on the dashboards),
   // "Finalize modified data" writes them and rebuilds the aggregates and dashboards, and
   // "Mark as reviewed" makes the batch Final. Editing a Final batch starts the next revision.
-  const rv = { batch: null, search: "", changed: false, page: 1, utility: 0, region: 0, all: false, tab: "rows", cols: null, job: null };
+  const rv = { batch: null, search: "", changed: false, page: 1, utility: 0, region: 0, all: false, tab: "rows", cols: null, job: null,
+               ruleFilter: null, ref: null,
+               fb: { rule: { combine: "and", rules: [] }, action: "update", sets: [{ field: "AMOUNT", formula: "" }] } };
   async function reviewPage() {
     if (!state.me.can_review) return notAllowed();
     const main = shell("review");
@@ -609,7 +611,7 @@
                        <button class="btn primary" id="rv-finalize" ${busy ? "disabled" : ""}>${icon("pulse")}Finalize modified data</button>` : ""}
           ${!final ? `<button class="btn ${pending ? "" : "primary"}" id="rv-reviewed" ${pending || busy ? "disabled" : ""} title="${pending ? "Finalize or discard the pending edits first" : "Make this data Final"}">${icon("check")}Mark as reviewed</button>` : ""}
         </div></div>
-        <div class="tabs"><button class="${rv.tab === "rows" ? "on" : ""}" data-tab="rows">${icon("table")}Rows</button><button class="${rv.tab === "history" ? "on" : ""}" data-tab="history">${icon("undo")}Change history</button></div>
+        <div class="tabs"><button class="${rv.tab === "rows" ? "on" : ""}" data-tab="rows">${icon("table")}Rows</button><button class="${rv.tab === "formula" ? "on" : ""}" data-tab="formula">${icon("fx")}Formula builder</button><button class="${rv.tab === "history" ? "on" : ""}" data-tab="history">${icon("undo")}Change history</button></div>
         <div id="rv-body"></div>`;
       el.querySelectorAll("[data-tab]").forEach((t) => t.onclick = () => { rv.tab = t.dataset.tab; panel(); });
       el.querySelector("#rv-discard")?.addEventListener("click", async () => {
@@ -627,7 +629,7 @@
           toast(`${icon("check")}<span><b>${esc(fmtPeriod(b.period))}</b> is reviewed and Final.</span>`, "good"); refresh();
         }
       });
-      rv.tab === "rows" ? rowsView() : historyView();
+      rv.tab === "rows" ? rowsView() : rv.tab === "formula" ? formulaView() : historyView();
     }
 
     async function act(url, body) {
@@ -648,6 +650,7 @@
           <label class="rv-check"><input type="checkbox" id="rv-all" ${rv.all ? "checked" : ""}> All columns</label>
           <button class="btn small primary" id="rv-add" ${bgBusy() ? "disabled" : ""}>${icon("plus")}Add row</button>
         </div>
+        ${rv.ruleFilter ? `<div class="active-filters"><span class="af-label">Filtered by</span><button class="fchip" id="rv-rulex"><span>Formula rule</span><b>${esc(ruleText(rv.ruleFilter))}</b>${icon("x")}</button></div>` : ""}
         <div id="rv-grid"><div class="skeleton"></div></div>`;
       let t;
       body.querySelector("#rv-q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { rv.search = e.target.value; rv.page = 1; grid(); }, 350); });
@@ -656,12 +659,14 @@
       body.querySelector("#rv-changed").onchange = (e) => { rv.changed = e.target.checked; rv.page = 1; grid(); };
       body.querySelector("#rv-all").onchange = (e) => { rv.all = e.target.checked; grid(); };
       body.querySelector("#rv-add").onclick = () => addRowModal(b);
+      body.querySelector("#rv-rulex")?.addEventListener("click", () => { rv.ruleFilter = null; rv.page = 1; rowsView(); });
       grid();
     }
 
     async function grid() {
       const box = main.querySelector("#rv-grid"), b = cur(); if (!box) return;
-      const qs = new URLSearchParams({ search: rv.search, changed: rv.changed ? 1 : 0, page: rv.page, size: 50, utility: rv.utility, region: rv.region });
+      const qs = new URLSearchParams({ search: rv.search, changed: rv.changed ? 1 : 0, page: rv.page, size: 50, utility: rv.utility, region: rv.region,
+                                       rule: rv.ruleFilter ? JSON.stringify(rv.ruleFilter) : "" });
       let d; try { d = await api(`/api/review/${encodeURIComponent(b.batch_id)}/rows?${qs}`); }
       catch (err) { box.innerHTML = `<div class="note">${esc(err.message)}</div>`; return; }
       const cols = rv.all ? rv.cols.editable : rv.cols.default, busy = bgBusy();
@@ -707,13 +712,320 @@
       });
     }
 
+    // ---------------- formula builder: which rows (a query), what to do, set values, preview
+    const UTIL = { 1: "Electricity", 2: "Sewerage", 3: "Water" }, ISL = { 1: "Mahe", 2: "Praslin", 3: "La Digue" };
+    const OPS_FOR = { number: ["eq", "ne", "gt", "ge", "lt", "le", "between", "in", "empty", "not_empty"],
+                      code: ["eq", "ne", "in"],
+                      text: ["eq", "ne", "contains", "not_contains", "starts", "ends", "in", "empty", "not_empty"],
+                      date: ["eq", "ne", "gt", "ge", "lt", "le", "between", "empty", "not_empty"] };
+    function ruleText(node) {  // the rule in words, for chips
+      if (!node) return "";
+      if (node.rules) {
+        const parts = node.rules.map(ruleText).filter(Boolean);
+        return parts.length > 1 ? parts.join(node.combine === "or" ? " or " : " and ") : parts[0] || "every row";
+      }
+      if (node.formula !== undefined) return node.formula || "(formula)";
+      const f = rv.ref?.fields.find((x) => x.name === node.field);
+      const v = Array.isArray(node.value) ? node.value.join(" and ") : node.value;
+      return `${f ? f.label : node.field} ${rv.ref?.ops[node.op] || node.op}${["empty", "not_empty"].includes(node.op) ? "" : " " + (v ?? "")}`;
+    }
+
+    async function formulaView() {
+      const body = main.querySelector("#rv-body"), b = cur();
+      if (!rv.ref) { try { rv.ref = await api("/api/review/formula/reference"); } catch (e) { return; } }
+      const R = rv.ref, fb = rv.fb, FIELD = Object.fromEntries(R.fields.map((f) => [f.name, f]));
+      const fieldOpts = (cur, editableOnly) => ["number", "code", "text", "date"].map((k) => {
+        const fs = R.fields.filter((f) => f.kind === k && (!editableOnly || f.editable));
+        return fs.length ? `<optgroup label="${{ number: "Numbers", code: "Codes", text: "Text", date: "Dates" }[k]}">${fs.map((f) => `<option value="${f.name}" ${f.name === cur ? "selected" : ""}>${esc(f.label)}</option>`).join("")}</optgroup>` : "";
+      }).join("");
+      let saved = [];
+      try { saved = (await api("/api/review/formulas/saved")).saved; } catch (e) {}
+      body.innerHTML = `
+        <div class="fb">
+          <div class="fb-top">
+            <p>Build a rule that picks rows, choose what to do with them, and preview the result. Applying adds the changes to the pending edits: nothing reaches the dashboards until you press <b>Finalize modified data</b>.</p>
+            <div class="fb-saved">
+              <select id="fb-load"><option value="">${saved.length ? "Load a saved formula…" : "No saved formulas yet"}</option>${saved.map((x) => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join("")}</select>
+              <button class="btn small ghost" id="fb-forget" title="Delete the selected saved formula" disabled>${icon("trash")}</button>
+              <button class="btn small ghost" id="fb-reset">${icon("undo")}Start over</button>
+            </div>
+          </div>
+          <section class="fb-step"><div class="fb-num">1</div><div class="fb-body">
+            <h4>Which rows</h4><p class="hint">Like a query: conditions joined by AND / OR, groups for mixing them. No conditions means every row of ${esc(fmtPeriod(b.period))}.</p>
+            <div id="fb-rule"></div>
+            <div class="fb-count" id="fb-count"></div>
+          </div></section>
+          <section class="fb-step"><div class="fb-num">2</div><div class="fb-body">
+            <h4>What to do</h4>
+            <div class="fb-actions">${Object.entries(R.actions).map(([k, label]) => `
+              <label class="fb-action ${fb.action === k ? "on" : ""}"><input type="radio" name="fb-act" value="${k}" ${fb.action === k ? "checked" : ""}>
+                <span>${icon({ update: "edit", copy: "plus", delete: "trash" }[k])}</span><b>${esc(label)}</b>
+                <small>${{ update: "Set fields on every matching row", copy: "Add a copy of every matching row, with fields set", delete: "Remove every matching row" }[k]}</small></label>`).join("")}</div>
+          </div></section>
+          <section class="fb-step" id="fb-sets-step" ${fb.action === "delete" ? "hidden" : ""}><div class="fb-num">3</div><div class="fb-body">
+            <h4>${fb.action === "copy" ? "Set values on the copies (optional)" : "Set values"}</h4>
+            <p class="hint">A formula like in Excel. Refer to fields as <code>[Amount]</code>; text goes in quotes. Formulas read each row's values before the change.</p>
+            <div class="fb-toolbar" id="fb-toolbar">
+              <select id="fb-ins-field"><option value="">Insert field…</option>${fieldOpts("", false)}</select>
+              <select id="fb-ins-fn"><option value="">Insert function…</option>${Object.entries(R.functions).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select>
+              ${["+", "-", "*", "/", "&", "=", ">", "<", "(", ")"].map((o) => `<button type="button" class="fb-op" data-ins=" ${o} ">${esc(o)}</button>`).join("")}
+              <select id="fb-example"><option value="">Examples…</option>${R.examples.map((x, i) => `<option value="${i}">${esc(x.label)}</option>`).join("")}</select>
+            </div>
+            <div id="fb-sets"></div>
+            <button class="btn small ghost" id="fb-addset">${icon("plus")}Set another field</button>
+          </div></section>
+          <section class="fb-step"><div class="fb-num">${fb.action === "delete" ? 3 : 4}</div><div class="fb-body">
+            <h4>Preview</h4>
+            <div id="fb-preview"><div class="skeleton"></div></div>
+            <div class="fb-go">
+              <button class="btn primary" id="fb-apply" disabled>${icon("check")}Apply</button>
+              <button class="btn" id="fb-show">${icon("table")}Show matching rows</button>
+              <button class="btn ghost" id="fb-save">${icon("spark")}Save this formula</button>
+            </div>
+          </div></section>
+        </div>`;
+
+      // ----- step 1: the rule tree
+      const at = (path) => path.reduce((n, i) => n.rules[i], fb.rule);
+      const valueInput = (r, path) => {
+        const f = FIELD[r.field] || {}, p = JSON.stringify(path);
+        if (["empty", "not_empty"].includes(r.op)) return "";
+        if (f.kind === "code" && r.op !== "in") {
+          const names = f.name === "UTILITYTYPE" ? UTIL : f.name === "REGION" ? ISL : {};
+          return `<select class="qb-val" data-path='${p}'>${f.choices.map((c) => `<option value="${c}" ${String(r.value) === String(c) ? "selected" : ""}>${c}${names[c] ? " · " + names[c] : ""}</option>`).join("")}</select>`;
+        }
+        if (r.op === "between") {
+          const [a, z] = Array.isArray(r.value) ? r.value : ["", ""];
+          return `<input class="qb-val" data-i="0" data-path='${p}' value="${esc(a)}" placeholder="from"><span class="qb-and">and</span><input class="qb-val" data-i="1" data-path='${p}' value="${esc(z)}" placeholder="to">`;
+        }
+        return `<input class="qb-val" data-path='${p}' value="${esc(r.value ?? "")}" placeholder="${r.op === "in" ? "values, separated by commas" : f.kind === "date" ? "yyyy-mm-dd" : f.kind === "number" ? "a number" : "a value"}">`;
+      };
+      const group = (node, path) => {
+        const p = JSON.stringify(path);
+        return `<div class="qb-group ${path.length ? "nested" : ""}">
+          <div class="qb-head">
+            <div class="seg"><button class="${node.combine !== "or" ? "on" : ""}" data-combine="and" data-path='${p}'>AND</button><button class="${node.combine === "or" ? "on" : ""}" data-combine="or" data-path='${p}'>OR</button></div>
+            <span>${node.rules.length ? `Rows matching <b>${node.combine === "or" ? "any" : "all"}</b> of these` : "Every row (no conditions yet)"}</span>
+            ${path.length ? `<button class="btn small ghost qb-x" data-remove='${p}' title="Remove this group">${icon("x")}</button>` : ""}
+          </div>
+          <div class="qb-rules">${node.rules.map((r, i) => {
+            const rp = JSON.stringify([...path, i]);
+            if (r.rules) return group(r, [...path, i]);
+            if (r.formula !== undefined) return `<div class="qb-rule formula"><span class="qb-tag">${icon("fx")}Formula</span>
+              <input class="qb-formula" data-path='${rp}' value="${esc(r.formula)}" placeholder="e.g. [Amount] > [Quantity] * 5">
+              <button class="btn small ghost qb-x" data-remove='${rp}' title="Remove">${icon("x")}</button></div>`;
+            const f = FIELD[r.field] || {}, ops = OPS_FOR[f.kind || "text"];
+            return `<div class="qb-rule">
+              <select class="qb-field" data-path='${rp}'>${fieldOpts(r.field, false)}</select>
+              <select class="qb-op" data-path='${rp}'>${ops.map((o) => `<option value="${o}" ${o === r.op ? "selected" : ""}>${esc(R.ops[o])}</option>`).join("")}</select>
+              ${valueInput(r, [...path, i])}
+              <button class="btn small ghost qb-x" data-remove='${rp}' title="Remove">${icon("x")}</button></div>`;
+          }).join("")}</div>
+          <div class="qb-add">
+            <button class="btn small ghost" data-add="rule" data-path='${p}'>${icon("plus")}Condition</button>
+            ${path.length < 3 ? `<button class="btn small ghost" data-add="group" data-path='${p}'>${icon("plus")}Group</button>` : ""}
+            <button class="btn small ghost" data-add="formula" data-path='${p}'>${icon("fx")}Formula condition</button>
+          </div></div>`;
+      };
+      const drawRule = () => {
+        const box = body.querySelector("#fb-rule");
+        box.innerHTML = group(fb.rule, []);
+        const P = (el) => JSON.parse(el.dataset.path || el.dataset.remove);
+        box.querySelectorAll("[data-combine]").forEach((el) => el.onclick = () => { at(P(el)).combine = el.dataset.combine; drawRule(); schedule(); });
+        box.querySelectorAll("[data-add]").forEach((el) => el.onclick = () => {
+          const g = at(P(el));
+          g.rules.push(el.dataset.add === "group" ? { combine: "or", rules: [{ field: "REGION", op: "eq", value: "1" }] }
+            : el.dataset.add === "formula" ? { formula: "" } : { field: "REGION", op: "eq", value: "1" });
+          drawRule(); schedule();
+        });
+        box.querySelectorAll("[data-remove]").forEach((el) => el.onclick = () => {
+          const path = P(el), i = path.pop(); at(path).rules.splice(i, 1); drawRule(); schedule();
+        });
+        box.querySelectorAll(".qb-field").forEach((el) => el.onchange = () => {
+          const r = at(P(el)), f = FIELD[el.value];
+          r.field = el.value; r.op = OPS_FOR[f.kind][0]; r.value = f.kind === "code" ? String(f.choices[0]) : "";
+          drawRule(); schedule();
+        });
+        box.querySelectorAll(".qb-op").forEach((el) => el.onchange = () => {
+          const r = at(P(el)); r.op = el.value;
+          if (r.op === "between") r.value = ["", ""]; else if (Array.isArray(r.value)) r.value = "";
+          drawRule(); schedule();
+        });
+        box.querySelectorAll(".qb-val").forEach((el) => el.oninput = el.onchange = () => {
+          const r = at(P(el));
+          if (el.dataset.i !== undefined) { r.value = Array.isArray(r.value) ? r.value : ["", ""]; r.value[+el.dataset.i] = el.value; }
+          else r.value = el.value;
+          schedule();
+        });
+        box.querySelectorAll(".qb-formula").forEach((el) => el.oninput = () => { at(P(el)).formula = el.value; schedule(); });
+      };
+
+      // ----- step 2: action
+      body.querySelectorAll("input[name=fb-act]").forEach((el) => el.onchange = () => {
+        fb.action = el.value;
+        if (fb.action === "update" && !fb.sets.length) fb.sets.push({ field: "AMOUNT", formula: "" });
+        formulaView();
+      });
+
+      // ----- step 3: Set field = formula
+      let focused = null;
+      const drawSets = () => {
+        const box = body.querySelector("#fb-sets"); if (!box) return;
+        box.innerHTML = fb.sets.map((st, i) => `
+          <div class="fb-set" data-i="${i}">
+            <select class="fb-set-field" data-i="${i}">${fieldOpts(st.field, true)}</select>
+            <span class="fb-eq">=</span>
+            <div class="fb-fx"><span class="fx">fx</span><input class="fb-formula" data-i="${i}" value="${esc(st.formula)}" spellcheck="false" autocomplete="off"
+              placeholder="${FIELD[st.field]?.kind === "text" ? '"new text" or a formula' : "e.g. [Amount] * 1.05"}"></div>
+            <button class="btn small ghost qb-x" data-del="${i}" title="Remove">${icon("x")}</button>
+            <div class="fb-err" id="fb-err-${i}"></div>
+          </div>`).join("") || `<div class="note">No fields set: the copies will be exact copies.</div>`;
+        box.querySelectorAll(".fb-set-field").forEach((el) => el.onchange = () => { fb.sets[+el.dataset.i].field = el.value; drawSets(); schedule(); });
+        box.querySelectorAll(".fb-formula").forEach((el) => {
+          el.onfocus = () => { focused = el; };
+          el.oninput = () => { fb.sets[+el.dataset.i].formula = el.value; schedule(); };
+        });
+        box.querySelectorAll("[data-del]").forEach((el) => el.onclick = () => { fb.sets.splice(+el.dataset.del, 1); drawSets(); schedule(); });
+        focused = focused && focused.isConnected ? focused : box.querySelector(".fb-formula");
+      };
+      const insert = (text) => {
+        const el = focused && focused.isConnected ? focused : body.querySelector(".fb-formula"); if (!el) return;
+        const a = el.selectionStart ?? el.value.length, z = el.selectionEnd ?? el.value.length;
+        el.value = el.value.slice(0, a) + text + el.value.slice(z);
+        el.focus(); const c = a + text.length - (text.endsWith("()") ? 1 : 0); el.setSelectionRange(c, c);
+        fb.sets[+el.dataset.i].formula = el.value; schedule();
+      };
+      if (fb.action !== "delete") {
+        body.querySelector("#fb-ins-field").onchange = (e) => { if (e.target.value) insert(`[${FIELD[e.target.value].label}]`); e.target.value = ""; };
+        body.querySelector("#fb-ins-fn").onchange = (e) => { if (e.target.value) insert(`${e.target.value}()`); e.target.value = ""; };
+        body.querySelectorAll(".fb-op").forEach((el) => el.onmousedown = (e) => { e.preventDefault(); insert(el.dataset.ins.trim() === "(" || el.dataset.ins.trim() === ")" ? el.dataset.ins.trim() : el.dataset.ins); });
+        body.querySelector("#fb-example").onchange = (e) => {
+          const x = R.examples[+e.target.value]; e.target.value = ""; if (!x) return;
+          const i = fb.sets.findIndex((st) => st.field === x.field);
+          if (i >= 0) fb.sets[i].formula = x.formula; else fb.sets.push({ field: x.field, formula: x.formula });
+          drawSets(); schedule();
+        };
+        body.querySelector("#fb-addset").onclick = () => {
+          const used = new Set(fb.sets.map((st) => st.field));
+          fb.sets.push({ field: R.fields.find((f) => f.editable && !used.has(f.name))?.name || "AMOUNT", formula: "" });
+          drawSets(); schedule();
+        };
+      }
+
+      // ----- step 4: preview (debounced), apply, save, show rows
+      let timer, seq = 0, last = null;
+      const spec = () => ({ rule: fb.rule, action: fb.action, sets: fb.action === "delete" ? [] : fb.sets });
+      function schedule() { clearTimeout(timer); timer = setTimeout(preview, 450); }
+      async function countOnly() {
+        const my = seq;
+        try {
+          const qs = new URLSearchParams({ rule: JSON.stringify(fb.rule), size: 10 });
+          const d = await api(`/api/review/${encodeURIComponent(b.batch_id)}/rows?${qs}`);
+          if (my === seq) body.querySelector("#fb-count").innerHTML = `${icon("search")}<b>${d.total.toLocaleString()}</b> rows match <span class="muted">· ${esc(ruleText(fb.rule))}</span>`;
+        } catch (e) { if (my === seq) body.querySelector("#fb-count").innerHTML = `<span class="fb-err">${esc(e.message)}</span>`; }
+      }
+      const money = (v) => `${CURRENCY} ${Math.round(v).toLocaleString()}`;
+      const signed = (v) => `${v >= 0 ? "+" : "−"}${CURRENCY} ${Math.abs(Math.round(v)).toLocaleString()}`;
+      async function preview() {
+        const my = ++seq, box = body.querySelector("#fb-preview"), applyBtn = body.querySelector("#fb-apply");
+        if (!box) return;
+        box.classList.add("loading");
+        body.querySelectorAll(".fb-err").forEach((e) => { e.innerHTML = ""; });
+        body.querySelectorAll(".fb-formula").forEach((e) => e.classList.remove("bad"));
+        let r, d;
+        try {
+          r = await fetch(`/api/review/${encodeURIComponent(b.batch_id)}/formula/preview`, { method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/json" }, body: JSON.stringify(spec()) });
+          d = await r.json();
+        } catch (e) { return; }
+        if (my !== seq) return;  // a newer preview is on its way
+        box.classList.remove("loading");
+        last = r.ok ? d : null;
+        applyBtn.disabled = true;
+        if (!r.ok) {
+          const i = d.field ? fb.sets.findIndex((st) => st.field === d.field) : -1;
+          if (i >= 0) countOnly();  // the rule is fine: still say how many rows it matches
+          else body.querySelector("#fb-count").innerHTML = "";
+          if (i >= 0 && !fb.sets[i].formula.trim()) {  // not written yet: a nudge, not an error
+            body.querySelector(`#fb-err-${i}`).innerHTML = `<span class="muted">Type a formula, or pick one from Examples.</span>`;
+            box.innerHTML = `<div class="note">The preview appears as soon as every field has a formula.</div>`;
+          } else if (i >= 0) {  // point at the problem inside the formula
+            const src = fb.sets[i].formula, pos = Math.min(d.pos ?? src.length, src.length);
+            body.querySelector(`#fb-err-${i}`).innerHTML = `${icon("x")}<span>${esc(d.detail.replace(/^[^:]+: /, ""))}</span>${src ? `<code>${esc(src.slice(0, pos))}<mark>${esc(src.slice(pos, pos + 1) || " ")}</mark>${esc(src.slice(pos + 1))}</code>` : ""}`;
+            body.querySelector(`.fb-formula[data-i="${i}"]`)?.classList.add("bad");
+            box.innerHTML = `<div class="note">Fix the formula above to see the preview.</div>`;
+          } else box.innerHTML = `<div class="error">${esc(d.detail || "Cannot preview this")}</div>`;
+          return;
+        }
+        body.querySelector("#fb-count").innerHTML = `${icon("search")}<b>${d.matched.toLocaleString()}</b> of ${d.batch_rows.toLocaleString()} rows match <span class="muted">· ${esc(d.rule_text)}</span>`;
+        const verb = { update: "will change", copy: "will be added", delete: "will be deleted" }[d.action];
+        const cols = d.columns, tg = new Set(d.targets);
+        const shown = d.action === "update" ? cols : cols;
+        box.innerHTML = `
+          <div class="fb-stats">
+            <div class="fb-stat"><small>Rows matched</small><b>${d.matched.toLocaleString()}</b></div>
+            <div class="fb-stat accent"><small>Rows that ${verb.replace("will ", "will ")}</small><b>${d.affected.toLocaleString()}</b></div>
+            <div class="fb-stat"><small>Amount of these rows</small><b>${money(d.amount_before)}</b>${d.action === "update" ? `<span>→ ${money(d.amount_after)}</span>` : d.action === "copy" ? `<span>copies add ${money(d.amount_after)}</span>` : `<span>removed</span>`}</div>
+            <div class="fb-stat"><small>${esc(fmtPeriod(b.period))} total</small><b>${money(d.batch_amount_after)}</b><span class="${d.batch_amount_after - d.batch_amount >= 0 ? "up" : "down"}">${signed(d.batch_amount_after - d.batch_amount)} vs now</span></div>
+          </div>
+          ${d.invalid.length ? `<div class="error">${icon("x")} Cannot apply: ${d.invalid.map((x) => `${esc(x.label)} would be invalid on ${x.rows.toLocaleString()} row(s)`).join("; ")}. Utility and Island must be 1–3, numbers must be numbers, dates yyyy-mm-dd.</div>` : ""}
+          ${d.too_many ? `<div class="error">At most 100,000 rows can be copied at once.</div>` : ""}
+          ${d.sample.length ? `<div class="tbl-wrap"><table class="data fb-sample"><thead><tr><th class="n">Line</th>${shown.map((c) => `<th class="${FIELD[c]?.kind === "number" ? "n" : ""} ${tg.has(c) ? "tgt" : ""}">${esc(FIELD[c]?.label || c)}</th>`).join("")}</tr></thead><tbody>
+            ${d.sample.map((row) => `<tr class="${d.action === "delete" ? "p-delete" : ""}"><td class="n num">${d.action === "copy" ? `<span class="tag new">Copy of</span>` : ""}${row.line_no}</td>${shown.map((c) => {
+              const was = row.before[c], now = row.after[c], diff = d.action !== "delete" && was !== now;
+              return `<td class="${FIELD[c]?.kind === "number" ? "n" : ""} ${diff ? "diff" : ""}">${diff ? `<s>${esc(was)}</s> <b>${esc(now)}</b>` : esc(was)}</td>`;
+            }).join("")}</tr>`).join("")}
+            </tbody></table></div><p class="hint">First ${d.sample.length} of the rows that ${verb}.</p>` : `<div class="note">No rows ${verb}.</div>`}`;
+        applyBtn.disabled = !d.affected || d.invalid.length || d.too_many || bgBusy();
+        applyBtn.innerHTML = `${icon("check")}${{ update: "Change", copy: "Copy", delete: "Delete" }[d.action]} ${d.affected.toLocaleString()} row${d.affected === 1 ? "" : "s"}`;
+      }
+      body.querySelector("#fb-apply").onclick = async () => {
+        if (!last) return;
+        const n = last.affected, word = { update: "change", copy: "copy", delete: "delete" }[last.action];
+        if (!confirm(`${word[0].toUpperCase() + word.slice(1)} ${n.toLocaleString()} row(s) of ${fmtPeriod(b.period)}?\n\nThe changes join the pending edits; the dashboards change only when you finalize.`)) return;
+        const btn = body.querySelector("#fb-apply"); btn.disabled = true;
+        try {
+          await api(`/api/review/${encodeURIComponent(b.batch_id)}/formula/apply`, { method: "POST", body: JSON.stringify(spec()) });
+          toast(`${icon("check")}<span><b>${n.toLocaleString()} row(s)</b> ${{ update: "changed", copy: "copied", delete: "marked for deletion" }[last.action]}. Review them, then Finalize to rebuild the dashboards.</span>`, "good");
+          await loadBatches(); panel();
+        } catch (err) { toast(`${icon("x")}<span>${esc(err.message)}</span>`, "bad"); btn.disabled = false; }
+      };
+      body.querySelector("#fb-show").onclick = () => { rv.ruleFilter = JSON.parse(JSON.stringify(fb.rule)); rv.tab = "rows"; rv.page = 1; rv.changed = false; panel(); };
+      body.querySelector("#fb-save").onclick = () => modal(`<h2>Save this formula</h2><p class="sub">Saved formulas can be loaded again on any period.</p>
+          <form id="sf"><div id="serr"></div><label class="field"><span>Name</span><input name="name" maxlength="80" required placeholder="e.g. Praslin water +5%"></label>
+          <div class="actions"><button type="button" class="btn" id="scancel">Cancel</button><button class="btn primary">Save</button></div></form>`, (m, close) => {
+          m.querySelector("#scancel").onclick = close;
+          m.querySelector("#sf").onsubmit = async (e) => {
+            e.preventDefault();
+            try { await api("/api/review/formulas/save", { method: "POST", body: JSON.stringify({ name: new FormData(e.target).get("name"), spec: spec() }) }); }
+            catch (err) { m.querySelector("#serr").innerHTML = `<div class="error">${esc(err.message)}</div>`; return; }
+            close(); toast(`${icon("check")}<span>Formula saved.</span>`, "good"); formulaView();
+          };
+        });
+      const load = body.querySelector("#fb-load"), forget = body.querySelector("#fb-forget");
+      load.onchange = () => {
+        forget.disabled = !load.value;
+        const x = saved.find((s) => s.name === load.value); if (!x) return;
+        rv.fb = JSON.parse(JSON.stringify(x.spec));
+        if (rv.fb.action !== "delete" && !rv.fb.sets.length) rv.fb.sets = [];
+        formulaView().then(() => { body.querySelector("#fb-load").value = x.name; body.querySelector("#fb-forget").disabled = false; });
+      };
+      forget.onclick = async () => {
+        if (!load.value || !confirm(`Delete the saved formula "${load.value}"?`)) return;
+        await act("/api/review/formulas/forget", { name: load.value }); formulaView();
+      };
+      body.querySelector("#fb-reset").onclick = () => { rv.fb = { rule: { combine: "and", rules: [] }, action: "update", sets: [{ field: "AMOUNT", formula: "" }] }; formulaView(); };
+
+      drawRule(); drawSets(); preview();
+    }
+
     async function historyView() {
       const body = main.querySelector("#rv-body"), b = cur();
       const d = await api(`/api/review/${encodeURIComponent(b.batch_id)}/history`);
-      const what = { update: "Edited", insert: "Added row", delete: "Deleted row", undo: "Undid change", discard: "Discarded edits", finalize: "Finalized", reviewed: "Marked reviewed" };
+      const what = { update: "Edited", insert: "Added row", delete: "Deleted row", undo: "Undid change", discard: "Discarded edits", finalize: "Finalized", reviewed: "Marked reviewed", formula: "Formula" };
       body.innerHTML = d.history.length ? `<div class="tbl-wrap scroll-y"><table class="data"><thead><tr><th>When</th><th>Who</th><th>What</th><th class="n">Line</th><th>Field</th><th>Before</th><th>After</th><th class="n">Revision</th></tr></thead><tbody>
         ${d.history.map((h) => `<tr><td class="num">${esc(h.ts.slice(0, 19))}</td><td>${esc(h.user)}</td><td>${esc(what[h.action] || h.action)}</td><td class="n">${+h.line_no || ""}</td>
-          <td>${esc(h.column ? L(h.column) : "")}</td><td class="muted">${esc(h.old_value)}</td><td>${esc(h.new_value)}</td><td class="n">${h.revision}</td></tr>`).join("")}
+          <td>${esc(h.column ? L(h.column) : "")}</td><td class="muted">${h.action === "formula" ? `Rows where ${esc(h.old_value)}` : esc(h.old_value)}</td><td>${esc(h.new_value)}</td><td class="n">${h.revision}</td></tr>`).join("")}
         </tbody></table></div>` : `<div class="note">No changes yet: this is the data as uploaded.</div>`;
     }
 

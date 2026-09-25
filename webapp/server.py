@@ -39,6 +39,8 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 import ax_load  # noqa: E402  (.env, ch())
 import dashboards  # noqa: E402
 import review  # noqa: E402
+import bulk  # noqa: E402
+import formula  # noqa: E402
 from roles import ISLANDS, ROLES, SEED_USERS  # noqa: E402
 
 ch = ax_load.ch
@@ -360,14 +362,16 @@ def reviewer(request: Request) -> dict:
     return user
 
 
-def review_call(fn, *args):
+def review_call(fn, *args, locked=True):
     """Edits wait while a load or a finalize is running, so none is lost to the swap."""
-    if JOB_LOCK.locked():
+    if locked and JOB_LOCK.locked():
         raise HTTPException(409, "A load or finalize is running -- try again when it has finished")
     try:
         return fn(*args)
     except review.Invalid as e:
         raise HTTPException(400, str(e))
+    except formula.FormulaError as e:
+        return JSONResponse({"detail": str(e), "pos": e.pos, "field": getattr(e, "field", None)}, 400)
 
 
 @app.get("/api/review/columns")
@@ -384,13 +388,60 @@ def review_batches(request: Request):
 
 @app.get("/api/review/{batch_id}/rows")
 def review_rows(batch_id: str, request: Request, search: str = "", changed: int = 0, page: int = 1,
-                size: int = 50, utility: int = 0, region: int = 0):
+                size: int = 50, utility: int = 0, region: int = 0, rule: str = ""):
     reviewer(request)
     try:
         review.batch(batch_id)
     except review.Invalid as e:
         raise HTTPException(404, str(e))
-    return review.rows(batch_id, search[:100], bool(changed), page, size, utility, region)
+    try:
+        parsed = json.loads(rule) if rule else None
+    except ValueError:
+        raise HTTPException(400, "Malformed rule")
+    return review_call(review.rows, batch_id, search[:100], bool(changed), page, size, utility, region, parsed,
+                       locked=False)
+
+
+# --- formula builder: a rule picks rows, an action changes them (webapp/bulk.py) ---
+
+@app.get("/api/review/formula/reference")
+def formula_reference(request: Request):
+    reviewer(request)
+    return bulk.reference()
+
+
+@app.post("/api/review/{batch_id}/formula/preview")
+async def formula_preview(batch_id: str, request: Request):
+    reviewer(request)
+    return review_call(bulk.preview, batch_id, await request.json(), locked=False)
+
+
+@app.post("/api/review/{batch_id}/formula/apply")
+async def formula_apply(batch_id: str, request: Request):
+    user = reviewer(request)
+    spec = await request.json()
+    audit(user["username"], "formula", f"{batch_id}: {json.dumps(spec)[:900]}")
+    return review_call(bulk.apply, batch_id, spec, user["username"])
+
+
+@app.get("/api/review/formulas/saved")
+def formulas_saved(request: Request):
+    reviewer(request)
+    return {"saved": bulk.saved()}
+
+
+@app.post("/api/review/formulas/save")
+async def formulas_save(request: Request):
+    user = reviewer(request)
+    b = await request.json()
+    return review_call(bulk.save, b.get("name"), b.get("spec"), user["username"], locked=False)
+
+
+@app.post("/api/review/formulas/forget")
+async def formulas_forget(request: Request):
+    user = reviewer(request)
+    b = await request.json()
+    return review_call(bulk.forget, str(b.get("name", "")), user["username"], locked=False)
 
 
 @app.get("/api/review/{batch_id}/history")

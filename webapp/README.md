@@ -59,6 +59,37 @@ against the file, then the aggregates and dashboards are built. The upload is li
 3. **Mark as reviewed** makes the period **Final**. Editing Final data later, of any period,
    starts the next Draft revision.
 
+### Formula builder
+
+The **Formula builder** tab changes many rows at once, in four steps:
+
+1. **Which rows**: a query builder. Conditions (field, comparison, value) are joined by AND or
+   OR, can be grouped, and a condition can also be a formula (`[Amount] > [Quantity] * 5`). The
+   number of matching rows updates as you build.
+2. **What to do**: change values, copy the rows as new rows, or delete them.
+3. **Set values**: `field = formula`, written like in Excel, with buttons to insert fields,
+   functions and operators, and examples:
+
+   | Formula | Does |
+   |---|---|
+   | `ROUND([Amount] * 1.05, 2)` | 5% more, to the cent |
+   | `IF([Island] = 2, [Amount] * 0.9, [Amount])` | 10% less on Praslin only |
+   | `MAX([Amount], 0)` | never below zero |
+   | `"EMD1"` | a fixed value (a changed code brings its labels) |
+   | `TRIM(UPPER([Sector]))` | tidy text |
+
+   Functions: ROUND, ABS, MIN, MAX, IF, AND, OR, NOT, CONCAT (or `&`), UPPER, LOWER, TRIM,
+   LEFT, RIGHT, REPLACE, LEN, CONTAINS, ISBLANK, NUMBER, TEXT. A mistake is pointed out in the
+   formula as you type.
+4. **Preview**: how many rows change, the amount before and after, the period's new total, and
+   the first 20 rows before and after. Values a field cannot hold (Island 7, text in Amount)
+   are counted and block the apply.
+
+Applying adds the changes to the pending edits, like hand edits: check them on the Rows tab
+(**Show matching rows**), then Finalize. Formulas can be saved and loaded again on any period.
+Formulas are parsed by the app (`formula.py`) and only known fields, functions and quoted
+values reach the database.
+
 Every change is logged (who, when, before, after) under **Change history**. The dashboards show
 whether what's on screen is Draft or Final.
 
@@ -78,6 +109,8 @@ loses its dates, and the billing month then has to be recovered from the batch.
 - `dashboards.py`: the 10 dashboards as metrics over the built lines (`ub.fact_lines`), with
   customer and connection roll-ups (bill size, rank, change since the previous period)
 - `review.py`: the review workflow: rows with pending edits, edit / add / delete / undo, the log
+- `formula.py`: the formula and condition language, parsed and compiled to SQL
+- `bulk.py`: the formula builder's preview and apply (change / copy / delete), saved formulas
 - `roles.py`: roles, their pages and utilities, and the default users
 - `static/`: the front end (HTML, CSS, SVG charts). It has no external libraries, so it works on a
   network without internet access.

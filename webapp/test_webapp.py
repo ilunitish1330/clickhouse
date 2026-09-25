@@ -117,6 +117,7 @@ def main() -> None:
     rv = login("reviewer")
     batches = rv.get("/api/review/batches").json()["batches"]
     b = next(x for x in batches if x["period"] == last)["batch_id"]
+    rv.post(f"/api/review/{b}/discard")  # a clean start, even after an interrupted run
     row = rv.get(f"/api/review/{b}/rows", params={"size": 10}).json()["rows"][0]
     line, amount = row["line_no"], row["values"]["AMOUNT"]
     assert rv.post(f"/api/review/{b}/edit", json={"line_no": line, "changes": {"AMOUNT": "abc"}}).status_code == 400
@@ -152,6 +153,45 @@ def main() -> None:
     assert rv.post(f"/api/review/{b}/reviewed").json()["ok"]
     hist = rv.get(f"/api/review/{b}/history").json()["history"]
     assert {"update", "finalize", "reviewed"} <= {h["action"] for h in hist}
+
+    # formula builder: rule + action + formulas, compiled safely; a preview first; applying makes pending edits
+    assert ceo.post(f"/api/review/{b}/formula/preview", json={}).status_code == 403
+    praslin_water = {"combine": "and", "rules": [{"field": "REGION", "op": "eq", "value": "2"},
+                                                 {"field": "UTILITYTYPE", "op": "eq", "value": "3"}]}
+    spec = {"rule": praslin_water, "action": "update", "sets": [{"field": "AMOUNT", "formula": "[Amount] *"}]}
+    r = rv.post(f"/api/review/{b}/formula/preview", json=spec)
+    assert r.status_code == 400 and r.json()["field"] == "AMOUNT" and r.json()["pos"] == 10, r.text
+    for evil in ["1; DROP TABLE ub.raw_rows", "sleep(3)", "[Amount]) OR (1", "file('/etc/passwd')"]:
+        spec["sets"][0]["formula"] = evil
+        assert rv.post(f"/api/review/{b}/formula/preview", json=spec).status_code == 400, evil
+    evil_rule = {"rules": [{"field": "CUSTID", "op": "eq", "value": "x' OR '1'='1"}]}
+    assert rv.post(f"/api/review/{b}/formula/preview", json={"rule": evil_rule, "action": "delete"}).json()["matched"] == 0
+    assert rv.post(f"/api/review/{b}/formula/preview",
+                   json={"rule": {"rules": [{"field": "nope", "op": "eq", "value": 1}]}, "action": "delete"}).status_code == 400
+    spec["sets"][0]["formula"] = "ROUND([Amount] * 1.1, 2)"
+    p = rv.post(f"/api/review/{b}/formula/preview", json=spec).json()
+    island_rows = rv.get(f"/api/review/{b}/rows", params={"rule": __import__("json").dumps(praslin_water), "size": 10}).json()["total"]
+    assert p["matched"] == island_rows > 0 and 0 < p["affected"] <= p["matched"]
+    assert abs(p["amount_after"] - p["amount_before"] * 1.1) < p["matched"] * 0.01, "10% more, give or take rounding"
+    bad = rv.post(f"/api/review/{b}/formula/preview",
+                  json={"rule": praslin_water, "action": "update", "sets": [{"field": "REGION", "formula": "7"}]}).json()
+    assert bad["invalid"] and rv.post(f"/api/review/{b}/formula/apply", json={"rule": praslin_water, "action": "update",
+                                      "sets": [{"field": "REGION", "formula": "7"}]}).status_code == 400
+    assert rv.post(f"/api/review/{b}/formula/apply", json=spec).json()["affected"] == p["affected"]
+    assert status()["pending"] == p["affected"] and revenue(ceo, period=last) == before, "applied, but not on the dashboards"
+    big = {"combine": "and", "rules": [{"field": "REGION", "op": "eq", "value": "3"}, {"field": "AMOUNT", "op": "gt", "value": "3000"}]}
+    copies = rv.post(f"/api/review/{b}/formula/apply", json={"rule": big, "action": "copy",
+                     "sets": [{"field": "CUSTID", "formula": '"TEST-" & [Customer]'}]}).json()["affected"]
+    assert copies > 0 and status()["pending"] == p["affected"] + copies
+    assert rv.post(f"/api/review/{b}/formula/apply", json={"rule": {"rules": [{"field": "CUSTID", "op": "starts", "value": "TEST-"}]},
+                                                          "action": "delete"}).json()["affected"] == copies
+    assert status()["pending"] == p["affected"], "deleting the copies drops them from the pending edits"
+    assert "formula" in {h["action"] for h in rv.get(f"/api/review/{b}/history").json()["history"]}
+    assert rv.post(f"/api/review/{b}/discard").json()["discarded"] == p["affected"] and status()["pending"] == 0
+    assert rv.post("/api/review/formulas/save", json={"name": "test: praslin water +10%", "spec": spec}).json()["ok"]
+    assert any(x["name"] == "test: praslin water +10%" for x in rv.get("/api/review/formulas/saved").json()["saved"])
+    rv.post("/api/review/formulas/forget", json={"name": "test: praslin water +10%"})
+    assert not any(x["name"].startswith("test:") for x in rv.get("/api/review/formulas/saved").json()["saved"])
 
     # password change
     assert ceo.post("/api/me/password", json={"current": "nope", "new": "Another-pass-2"}).status_code == 400
