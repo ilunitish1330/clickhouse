@@ -110,6 +110,12 @@ def _round_digits(e, pos):
     return n
 
 
+def xround(x: str, n: int) -> str:
+    """Round like Excel: halves away from zero (2.5 -> 3, 2.675 -> 2.68). A float's shortest text
+    ('2.675') read as a Decimal rounds exactly; Float64 round() would give 2 and 2.67."""
+    return f"ifNull(toFloat64(round(toDecimal128OrNull(toString({x}), 12), {n})), round({x}, {n}))"
+
+
 def _same(a, b):  # IF / MIN / MAX: both numbers, else both text
     return ("num", as_num(a), as_num(b)) if a[1] == b[1] == "num" else ("txt", as_txt(a), as_txt(b))
 
@@ -132,7 +138,7 @@ def call(name: str, args: list, pos: int):
     if not lo <= len(args) <= hi:
         raise FormulaError(f"{name} takes {lo if lo == hi else f'{lo} to {hi}'} value(s): {usage}", pos)
     if name == "ROUND":
-        return (f"round({as_num(args[0])}, {_round_digits(args[1], pos) if len(args) > 1 else 0})", "num")
+        return (xround(as_num(args[0]), _round_digits(args[1], pos) if len(args) > 1 else 0), "num")
     if name == "ABS":
         return (f"abs({as_num(args[0])})", "num")
     if name in ("MIN", "MAX"):
@@ -297,7 +303,7 @@ def value_sql(target: str, src: str) -> str:
     if t == "bool":
         raise FormulaError("This formula gives TRUE/FALSE; a field needs a value", 0)
     if target in ("AMOUNT", "QUANTITY"):
-        return f"toString(round({as_num((sql, t))}, 4))"
+        return f"toString({xround(as_num((sql, t)), 4)})"
     if target in WHOLE or target in CODES or target == "CURDATETICKS":
         return f"toString(toInt64(round({as_num((sql, t))})))"
     return as_txt((sql, t))
@@ -308,8 +314,10 @@ def invalid_sql(target: str, src: str) -> str:
     sql, t, _ = compile_formula(src)
     # text going into a number field must read as a number, not quietly become 0
     not_num = f"isNull(toFloat64OrNull(trimBoth({sql}))) OR " if t == "txt" else ""
-    if target in ("AMOUNT", "QUANTITY", "CURDATETICKS"):
-        return f"{not_num}not isFinite({as_num((sql, t))})"
+    if target in ("AMOUNT", "QUANTITY"):  # stored as Decimal(18, 4): anything bigger would become 0
+        return f"{not_num}not (isFinite({as_num((sql, t))}) AND abs({as_num((sql, t))}) < 1e14)"
+    if target == "CURDATETICKS":
+        return f"{not_num}not (isFinite({as_num((sql, t))}) AND abs({as_num((sql, t))}) < 9e18)"
     if target in WHOLE:
         return f"{not_num}not (isFinite({as_num((sql, t))}) AND round({as_num((sql, t))}) BETWEEN 0 AND 999)"
     if target in CODES:

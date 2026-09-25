@@ -244,6 +244,9 @@ def apply(batch: str, user: str) -> None:
        f"UNION ALL "
        f"SELECT batch_id, {fname}, {RAW_COLS} FROM ub.raw_pending FINAL WHERE batch_id = {b} AND action != 'delete'")
     rows = int(ch(f"SELECT count() FROM ub.raw_rows_next FORMAT TSV"))
+    if rows == 0:  # a month with no rows would drop out of review with no way back but a re-upload
+        ch("TRUNCATE TABLE ub.raw_rows_next")
+        sys.exit("refused: the edits would delete every row of this batch. Upload its file again to replace it.")
     ch(f"ALTER TABLE ub.raw_rows REPLACE PARTITION {b} FROM ub.raw_rows_next")
     ch("TRUNCATE TABLE ub.raw_rows_next")
     ch(f"DELETE FROM ub.raw_pending WHERE batch_id = {b}")

@@ -79,18 +79,24 @@ The **Formula builder** tab changes many rows at once, in four steps:
    | `TRIM(UPPER([Sector]))` | tidy text |
 
    Functions: ROUND, ABS, MIN, MAX, IF, AND, OR, NOT, CONCAT (or `&`), UPPER, LOWER, TRIM,
-   LEFT, RIGHT, REPLACE, LEN, CONTAINS, ISBLANK, NUMBER, TEXT. A mistake is pointed out in the
-   formula as you type.
+   LEFT, RIGHT, REPLACE, LEN, CONTAINS, ISBLANK, NUMBER, TEXT. ROUND rounds halves away from
+   zero, like Excel (2.5 -> 3, 2.675 -> 2.68). A mistake is pointed out in the formula as you
+   type. Not supported: `^`, `%`, and thousands separators (`1,000`): write `1000`.
 4. **Preview**: how many rows change, the amount before and after, the period's new total, and
-   the first 20 rows before and after. Values a field cannot hold (Island 7, text in Amount)
-   are counted and block the apply.
+   the first 20 rows before and after. Values a field cannot hold (Island 7, text in Amount,
+   a division by zero, an amount of 100 trillion or more, a date not written yyyy-mm-dd) are
+   counted and block the apply, and so does deleting every row of a month.
 
 Applying adds the changes to the pending edits, like hand edits: check them on the Rows tab
 (**Show matching rows**), then Finalize. Formulas can be saved and loaded again on any period.
 Formulas are parsed by the app (`formula.py`) and only known fields, functions and quoted
 values reach the database.
 
-Every change is logged (who, when, before, after) under **Change history**. The dashboards show
+Every change is logged (who, when, before, after) under **Change history**.
+
+`python3 webapp/test_formula.py` tests the formula builder thoroughly on a throwaway test month
+(it never edits the real months): the formula language, mistakes, hostile input, conditions,
+the three actions, Finalize end to end, roles, and speed. The dashboards show
 whether what's on screen is Draft or Final.
 
 ## Periods

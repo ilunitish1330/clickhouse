@@ -970,13 +970,14 @@
           </div>
           ${d.invalid.length ? `<div class="error">${icon("x")} Cannot apply: ${d.invalid.map((x) => `${esc(x.label)} would be invalid on ${x.rows.toLocaleString()} row(s)`).join("; ")}. Utility and Island must be 1–3, numbers must be numbers, dates yyyy-mm-dd.</div>` : ""}
           ${d.too_many ? `<div class="error">At most 100,000 rows can be copied at once.</div>` : ""}
+          ${d.empties_month ? `<div class="error">This would delete every row of the month. To replace a month, upload its file again.</div>` : ""}
           ${d.sample.length ? `<div class="tbl-wrap"><table class="data fb-sample"><thead><tr><th class="n">Line</th>${shown.map((c) => `<th class="${FIELD[c]?.kind === "number" ? "n" : ""} ${tg.has(c) ? "tgt" : ""}">${esc(FIELD[c]?.label || c)}</th>`).join("")}</tr></thead><tbody>
             ${d.sample.map((row) => `<tr class="${d.action === "delete" ? "p-delete" : ""}"><td class="n num">${d.action === "copy" ? `<span class="tag new">Copy of</span>` : ""}${row.line_no}</td>${shown.map((c) => {
               const was = row.before[c], now = row.after[c], diff = d.action !== "delete" && was !== now;
               return `<td class="${FIELD[c]?.kind === "number" ? "n" : ""} ${diff ? "diff" : ""}">${diff ? `<s>${esc(was)}</s> <b>${esc(now)}</b>` : esc(was)}</td>`;
             }).join("")}</tr>`).join("")}
             </tbody></table></div><p class="hint">First ${d.sample.length} of the rows that ${verb}.</p>` : `<div class="note">No rows ${verb}.</div>`}`;
-        applyBtn.disabled = !d.affected || d.invalid.length || d.too_many || bgBusy();
+        applyBtn.disabled = !d.affected || d.invalid.length || d.too_many || d.empties_month || bgBusy();
         applyBtn.innerHTML = `${icon("check")}${{ update: "Change", copy: "Copy", delete: "Delete" }[d.action]} ${d.affected.toLocaleString()} row${d.affected === 1 ? "" : "s"}`;
       }
       body.querySelector("#fb-apply").onclick = async () => {

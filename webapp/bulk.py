@@ -94,13 +94,14 @@ def preview(batch_id: str, spec: dict, sample: int = 20) -> dict:
     plan = _plan(batch_id, spec)
     targets = [s["field"] for s in spec["sets"]]
     bads = ", ".join(f"countIf(bad_{i}) AS bad_{i}" for i in range(len(targets)))
+    fin = lambda c: f"sumIf(toFloat64OrZero({c}), isFinite(toFloat64OrZero({c})))"  # 1/0 must not break the sum
     st = q(f"SELECT count() AS matched, countIf(changed) AS changed, "
-           f"sum(toFloat64OrZero(o_AMOUNT)) AS amount_before, sum(toFloat64OrZero(f_AMOUNT)) AS amount_after, "
-           f"sum(toFloat64OrZero(o_QUANTITY)) AS quantity_before, sum(toFloat64OrZero(f_QUANTITY)) AS quantity_after"
+           f"{fin('o_AMOUNT')} AS amount_before, {fin('f_AMOUNT')} AS amount_after, "
+           f"{fin('o_QUANTITY')} AS quantity_before, {fin('f_QUANTITY')} AS quantity_after"
            f"{', ' + bads if bads else ''} FROM ({plan})")[0]
     total = q(f"SELECT count() AS rows, sum(toFloat64OrZero(AMOUNT)) AS amount FROM {_merged(batch_id)} AS m "
               f"WHERE m.pending != 'delete'")[0]
-    matched, before, after = int(st["matched"]), float(st["amount_before"]), float(st["amount_after"])
+    matched, before, after = int(st["matched"]), float(st["amount_before"] or 0), float(st["amount_after"] or 0)
     act = spec["action"]
     affected = int(st["changed"]) if act == "update" else matched
     new_total = {"update": float(total["amount"]) - before + after, "delete": float(total["amount"]) - before,
@@ -119,11 +120,12 @@ def preview(batch_id: str, spec: dict, sample: int = 20) -> dict:
              "before": {c: r[f"o_{c}"] for c in shown}, "after": {c: r[f"f_{c}"] for c in shown}} for r in got]
     return {"matched": matched, "affected": affected, "action": act, "rule_text": F.describe_rule(spec["rule"]),
             "amount_before": before, "amount_after": after,
-            "quantity_before": float(st["quantity_before"]), "quantity_after": float(st["quantity_after"]),
+            "quantity_before": float(st["quantity_before"] or 0), "quantity_after": float(st["quantity_after"] or 0),
             "batch_rows": int(total["rows"]), "batch_amount": float(total["amount"]),
             "batch_rows_after": new_rows, "batch_amount_after": new_total,
             "invalid": invalid, "columns": shown, "targets": targets, "sample": rows,
-            "too_many": act == "copy" and matched > MAX_COPY}
+            "too_many": act == "copy" and matched > MAX_COPY,
+            "empties_month": act == "delete" and matched >= int(total["rows"])}
 
 
 def _revision(batch_id: str) -> int:
@@ -139,6 +141,8 @@ def apply(batch_id: str, spec: dict, user: str) -> dict:
                       + "; ".join(f"{x['label']} on {x['rows']:,} row(s)" for x in p["invalid"]))
     if p["too_many"]:
         raise Invalid(f"At most {MAX_COPY:,} rows can be copied at once")
+    if p["empties_month"]:
+        raise Invalid("This would delete every row of the month. To replace a month, upload its file again.")
     if not p["affected"]:
         raise Invalid("No rows would change")
     b, u, rev = sql_list([batch_id]), sql_list([user]), _revision(batch_id)
