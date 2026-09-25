@@ -1,5 +1,7 @@
--- Dimensions and aggregates for ub.fact_billing, rebuilt after every load by
--- ub_load.py (or `python3 ub_load.py --aggregates`). Same conventions as
+-- The Power BI tables: dimensions and aggregates over ub.fact_billing (a view
+-- of the raw rows, ub_views.sql). Built on request -- `python3 ub_load.py
+-- --powerbi`, or "Build Power BI tables" in the web app -- before Power BI
+-- refreshes; the web app itself does not read them. Same conventions as
 -- aggregates.sql: CREATE OR REPLACE, plain numbers Power BI can read, and
 -- distinct counts are per aggregate row -- do not sum them across rows.
 --
@@ -131,11 +133,6 @@ FROM ub.fact_billing
 WHERE utility_name = 'Water'
 GROUP BY period_month, water_source, water_node;
 
-CREATE OR REPLACE VIEW ub.v_batches AS
-SELECT batch_id, period_month, count() AS lines, sum(amount) AS amount,
-       uniqExact(invoice_id) AS invoices, max(date_exact) AS has_exact_dates
-FROM ub.fact_billing GROUP BY batch_id, period_month;
-
 -- ============ Power BI layer ============
 -- What the Power BI report (powerbi/) imports, over plain HTTP. Labels are
 -- joined in here so the report needs no Power Query work. Row-level billing
@@ -145,10 +142,7 @@ FROM ub.fact_billing GROUP BY batch_id, period_month;
 -- The billing periods present, numbered so "previous period" means the
 -- previous period IN THE DATA (June 2025 -> January 2026 has no months between).
 CREATE OR REPLACE TABLE ub.pbi_period ENGINE = MergeTree ORDER BY period AS
-SELECT period, formatDateTime(period, '%Y-%m') AS year_month,
-       formatDateTime(period, '%b %Y') AS period_label, toYear(period) AS year,
-       toUInt32(row_number() OVER (ORDER BY period)) AS period_index
-FROM (SELECT DISTINCT period_month AS period FROM ub.fact_billing WHERE period_month > '1970-01-01');
+SELECT * FROM ub.v_periods;
 
 CREATE OR REPLACE VIEW ub.pbi_billing AS
 SELECT period_month AS period, utility_code, region_code, tariff_code, charge_key,
@@ -230,48 +224,3 @@ FROM (
     JOIN ub.pbi_period AS p ON p.period = b.period
     WINDOW w AS (PARTITION BY b.utility_code, b.connection_id ORDER BY p.period_index
                  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING));
-
--- ============ Web app layer (webapp/) ============
--- The billing lines with every label joined in, so each dashboard query is one
--- scan with no joins. Rebuilt with the rest after every load.
-CREATE OR REPLACE TABLE ub.app_billing
-ENGINE = MergeTree ORDER BY (period, utility_code, region_code) AS
-SELECT b.* EXCEPT (utility_code, region_code, tariff_code, charge_key),
-       b.utility_code AS utility_code, b.region_code AS region_code, b.tariff_code AS tariff_code,
-       b.charge_key AS charge_key, u.utility_name, r.region_name, t.tariff_desc, t.category_desc, t.sector_desc, t.sector_type,
-       c.charge_desc, c.value_desc, c.origin_desc, c.is_pv, c.is_free_text
-FROM ub.pbi_billing AS b
-LEFT JOIN ub.dim_utility AS u ON u.utility_code = b.utility_code
-LEFT JOIN ub.dim_region AS r ON r.region_code = b.region_code
-LEFT JOIN ub.pbi_tariff AS t ON t.tariff_code = b.tariff_code
-LEFT JOIN ub.pbi_charge_type AS c ON c.charge_key = b.charge_key;
-
-CREATE OR REPLACE TABLE ub.app_customer_period
-ENGINE = MergeTree ORDER BY (period, utility_code, customer_id) AS
-SELECT c.* EXCEPT (period, customer_id, utility_code, region_code), c.period AS period, c.customer_id AS customer_id,
-       c.utility_code AS utility_code, c.region_code AS region_code, u.utility_name, r.region_name,
-       m.sector_type AS sector_type, m.tariff_desc AS tariff_desc
-FROM ub.pbi_customer_period AS c
-LEFT JOIN ub.dim_utility AS u ON u.utility_code = c.utility_code
-LEFT JOIN ub.dim_region AS r ON r.region_code = c.region_code
-LEFT JOIN (  -- the customer's main sector and tariff group: where most of the bill is
-    SELECT period, utility_code, customer_id, argMax(sector_type, a) AS sector_type, argMax(tariff_desc, a) AS tariff_desc
-    FROM (SELECT period, utility_code, customer_id, sector_type, tariff_desc, abs(sum(amount)) AS a
-          FROM ub.app_billing GROUP BY period, utility_code, customer_id, sector_type, tariff_desc)
-    GROUP BY period, utility_code, customer_id) AS m
-  ON m.period = c.period AND m.utility_code = c.utility_code AND m.customer_id = c.customer_id;
-
-CREATE OR REPLACE TABLE ub.app_connection_period
-ENGINE = MergeTree ORDER BY (period, utility_code, connection_id) AS
-SELECT c.* EXCEPT (period, connection_id, utility_code, region_code), c.period AS period, c.connection_id AS connection_id,
-       c.utility_code AS utility_code, c.region_code AS region_code, u.utility_name, r.region_name,
-       m.sector_type AS sector_type, m.tariff_desc AS tariff_desc
-FROM ub.pbi_connection_period AS c
-LEFT JOIN ub.dim_utility AS u ON u.utility_code = c.utility_code
-LEFT JOIN ub.dim_region AS r ON r.region_code = c.region_code
-LEFT JOIN (  -- the connection's main sector and tariff group
-    SELECT period, utility_code, connection_id, argMax(sector_type, a) AS sector_type, argMax(tariff_desc, a) AS tariff_desc
-    FROM (SELECT period, utility_code, connection_id, sector_type, tariff_desc, abs(sum(amount)) AS a
-          FROM ub.app_billing GROUP BY period, utility_code, connection_id, sector_type, tariff_desc)
-    GROUP BY period, utility_code, connection_id) AS m
-  ON m.period = c.period AND m.utility_code = c.utility_code AND m.connection_id = c.connection_id;

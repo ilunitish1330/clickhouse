@@ -10,7 +10,6 @@ import re
 
 import ax_load  # ch()
 
-SRC = {"b": "ub.app_billing", "cp": "ub.app_customer_period", "cn": "ub.app_connection_period"}
 ONE_UNIT_B = "uniqExact(unit) = 1"
 ONE_UNIT_U = "uniqExact(utility_code) = 1"
 
@@ -51,8 +50,6 @@ METRICS = {
     "cp_customers": ("Customers", "cp", "uniqExact(customer_id)", "count"),
     "cp_consumption": ("Consumption", "cp", f"if({ONE_UNIT_U}, sum(consumption_qty), NULL)", "qty"),
     "cp_invoices": ("Invoices", "cp", "sum(invoices)", "count"),
-    "multi_utility": ("Customers with electricity and water", "cp",
-                      "uniqExactIf(customer_id, utility_mix = 'Electricity and water')", "count"),
     "cn_connections": ("Connections billed", "cn", "count()", "count"),
     "cn_avg_use": ("Average use per connection", "cn", f"if({ONE_UNIT_U}, avg(consumption_qty), NULL)", "qty"),
     "cn_zero": ("Zero-consumption connections", "cn", "countIf(consumption_qty <= 0)", "count"),
@@ -206,13 +203,82 @@ PAGES = {
 # Query building -- every value placed into SQL is checked against a whitelist
 # =============================================================================
 
-def periods() -> list[dict]:
+# Nothing below reads a pre-built table. Every report is parsed and aggregated
+# from the raw rows (ub.raw_rows, through the ub.v_lines view) when it is asked
+# for, reading only the batches, utilities and islands it needs. Results are
+# kept in memory until the raw rows change (a load, or a batch replaced).
+
+import threading
+import time
+from collections import OrderedDict
+
+_cache: OrderedDict = OrderedDict()
+_cache_lock = threading.Lock()
+CACHE_SIZE = 3000
+
+
+def data_version() -> str:
+    """Changes whenever raw rows are loaded or replaced."""
     try:
-        rows = json.loads(ax_load.ch("SELECT toString(period) AS period, period_label, period_index "
-                                     "FROM ub.pbi_period ORDER BY period FORMAT JSON"))["data"]
+        return ax_load.ch("SELECT count(), max(loaded_at), sum(rows) FROM ub.raw_batches FORMAT TSV").strip()
+    except Exception:
+        return ""
+
+
+class Stats:
+    """What building one page cost: raw rows read, queries run, how many came from the cache."""
+    def __init__(self):
+        self.rows = self.queries = self.cached = 0
+        self.t0 = time.time()
+
+    def out(self) -> dict:
+        return {"raw_rows_read": self.rows, "queries": self.queries, "from_cache": self.cached,
+                "ms": round((time.time() - self.t0) * 1000)}
+
+
+def run(sql: str, version: str | None = None, stats: Stats | None = None) -> list[dict]:
+    key = (version, sql)
+    if version is not None:
+        with _cache_lock:
+            if key in _cache:
+                _cache.move_to_end(key)
+                if stats:
+                    stats.queries += 1
+                    stats.cached += 1
+                return _cache[key]
+    r = ax_load.client.post(ax_load.CH, content=(sql + " FORMAT JSON").encode())
+    if r.status_code != 200:
+        raise RuntimeError(f"ClickHouse: {r.text.strip()}\n--- while running:\n{sql[:500]}")
+    data = json.loads(r.text)["data"]
+    if stats:
+        stats.queries += 1
+        try:
+            stats.rows += int(json.loads(r.headers.get("X-ClickHouse-Summary", "{}")).get("read_rows", 0))
+        except ValueError:
+            pass
+    if version is not None:
+        with _cache_lock:
+            _cache[key] = data
+            while len(_cache) > CACHE_SIZE:
+                _cache.popitem(last=False)
+    return data
+
+
+def periods(version: str | None = None) -> list[dict]:
+    try:
+        return run("SELECT toString(period) AS period, period_label, period_index FROM ub.v_periods ORDER BY period",
+                   version or data_version())
     except Exception:
         return []  # nothing loaded yet
-    return rows
+
+
+def period_batches(version: str) -> dict:
+    """period -> the batches holding its rows, so a report on one period skips every other batch."""
+    rows = run("SELECT toString(period) AS period, groupUniqArray(batch_id) AS batches FROM "
+               "(SELECT DISTINCT r.batch_id AS batch_id, if(r.row_month > '1970-01-01', r.row_month, b.batch_month) AS period "
+               " FROM ub.raw_rows AS r ANY LEFT JOIN ub.raw_batches AS b ON b.batch_id = r.batch_id) GROUP BY period",
+               version)
+    return {r["period"]: r["batches"] for r in rows}
 
 
 SECTORS = ("Domestic", "Commercial", "Government", "Other")
@@ -233,8 +299,9 @@ def tariffs(scope: dict) -> list[dict]:
     if scope["region"]:
         where += f" AND region_code = {int(scope['region'])}"
     try:
-        return run(f"SELECT tariff_desc AS name, groupUniqArray(utility_code) AS utilities FROM ub.app_billing "
-                   f"WHERE {where} AND tariff_desc != '' GROUP BY tariff_desc ORDER BY sum(amount) DESC")
+        return run(f"SELECT TARIFFGROUPDESC AS name, groupUniqArray(utility_code) AS utilities FROM ub.raw_rows "
+                   f"WHERE {where} AND TARIFFGROUPDESC != '' GROUP BY name ORDER BY sum(toFloat64OrZero(AMOUNT)) DESC",
+                   data_version())
     except Exception:
         return []
 
@@ -259,8 +326,72 @@ def scope_where(scope: dict, sel: dict, page_utility, *, all_periods=False) -> s
     return " AND ".join(conds)
 
 
-def run(sql: str) -> list[dict]:
-    return json.loads(ax_load.ch(sql + " FORMAT JSON"))["data"]
+def source(src: str, scope: dict, sel: dict, page_utility, ctx: dict, *, all_periods=False) -> str:
+    """The FROM ... WHERE of one report query: the raw rows it needs, parsed, filtered and -- for
+    customer (cp) and connection (cn) reports -- rolled up per customer or connection, right now."""
+    period = None if all_periods else sel.get("period")
+    batches = ctx["batches"]
+
+    def prune(ps):  # only the batches that hold these periods: ClickHouse skips the rest unread
+        bs = sorted({b for p in ps for b in batches.get(p, [])})
+        return f" AND batch_id IN ({', '.join(sql_str(b) for b in bs) or 'NULL'})"
+
+    if src == "b":
+        return f"ub.v_lines WHERE {scope_where(scope, sel, page_utility, all_periods=all_periods)}" + \
+            (prune([period]) if period else "")
+    if src == "cp":
+        lines = f"ub.v_lines WHERE {scope_where(scope, sel, page_utility, all_periods=all_periods)}" + \
+            (prune([period]) if period else "")
+        return f"""(
+    SELECT period, utility_code, customer_id, reg AS region_code, uname AS utility_name, rname AS region_name,
+           amt AS amount, cons AS consumption_qty, inv AS invoices,
+           multiIf(amt < 0, '1 Credit', amt < 100, '2 Under 100', amt < 500, '3 100-500',
+                   amt < 1000, '4 500-1,000', amt < 5000, '5 1,000-5,000',
+                   amt < 20000, '6 5,000-20,000', '7 20,000 and over') AS bill_band,
+           multiIf(rn <= 0.01 * n, '1 Top 1%', rn <= 0.10 * n, '2 Top 1-10%',
+                   rn <= 0.50 * n, '3 Top 10-50%', '4 Bottom 50%') AS pareto_band
+    FROM (SELECT *, row_number() OVER (PARTITION BY period, utility_code ORDER BY amt DESC) AS rn,
+                 count() OVER (PARTITION BY period, utility_code) AS n
+          FROM (SELECT period, utility_code, customer_id, any(region_code) AS reg,
+                       any(utility_name) AS uname, any(region_name) AS rname,
+                       sum(amount) AS amt, sumIf(quantity, charge_type = 1) AS cons, uniqExact(invoice_id) AS inv
+                FROM {lines} GROUP BY period, utility_code, customer_id))) WHERE 1"""
+    # cn: a connection's change needs its previous period in the data too, so read that as well
+    plist = ctx["periods"]
+    idx = {p["period"]: int(p["period_index"]) for p in plist}
+    order = "[" + ", ".join(f"toDate('{p['period']}')" for p in plist) + "]"
+    if period:
+        prev = next((p["period"] for p in plist if int(p["period_index"]) == idx[period] - 1), None)
+        want = [period] + ([prev] if prev else [])
+        lines = f"ub.v_lines WHERE {scope_where(scope, {**sel, 'period': None}, page_utility)}" + \
+            f" AND period IN ({', '.join(sql_str(p) for p in want)})" + prune(want)
+    else:
+        lines = f"ub.v_lines WHERE {scope_where(scope, sel, page_utility, all_periods=True)}"
+    return f"""(
+    SELECT period, utility_code, connection_id, reg AS region_code, uname AS utility_name, rname AS region_name,
+           pv AS pv_connection, if(pv = 1, 'PV', 'No PV') AS pv_label, amt AS amount, cons AS consumption_qty,
+           if(utility_code = 1,
+              multiIf(cons <= 0, '0 None', cons <= 100, '1 1-100 kWh', cons <= 200, '2 101-200 kWh',
+                      cons <= 300, '3 201-300 kWh', cons <= 500, '4 301-500 kWh', cons <= 1000, '5 501-1,000 kWh',
+                      cons <= 5000, '6 1,001-5,000 kWh', '7 Over 5,000 kWh'),
+              multiIf(cons <= 0, '0 None', cons <= 5, '1 1-5 m3', cons <= 10, '2 6-10 m3',
+                      cons <= 20, '3 11-20 m3', cons <= 50, '4 21-50 m3', cons <= 100, '5 51-100 m3',
+                      cons <= 500, '6 101-500 m3', '7 Over 500 m3')) AS consumption_band,
+           multiIf(prev_idx IS NULL OR prev_idx != period_index - 1, 'First period',
+                   prev_cons > 0 AND cons <= 0, 'Dropped to zero',
+                   prev_cons > 0 AND cons >= 3 * prev_cons, 'Jumped 3x or more',
+                   prev_cons > 0 AND cons <= prev_cons / 3, 'Fell to a third or less',
+                   prev_cons <= 0 AND cons > 0, 'Resumed from zero',
+                   cons <= 0, 'Zero in both periods', 'Normal change') AS change_flag
+    FROM (SELECT *, lagInFrame(toNullable(period_index)) OVER w AS prev_idx, lagInFrame(cons) OVER w AS prev_cons
+          FROM (SELECT period, indexOf({order}, period) AS period_index, utility_code, connection_id,
+                       any(region_code) AS reg, any(utility_name) AS uname,
+                       any(region_name) AS rname, max(pv_connection) AS pv,
+                       sum(amount) AS amt, sumIf(quantity, charge_type = 1) AS cons
+                FROM {lines} GROUP BY period, utility_code, connection_id)
+          WINDOW w AS (PARTITION BY utility_code, connection_id ORDER BY period_index
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)))
+    WHERE {f"period = '{period}'" if period else "1"}"""
 
 
 def num(v):
@@ -270,9 +401,13 @@ def num(v):
 def page_data(page_id: str, scope: dict, sel: dict) -> dict:
     page = PAGES[page_id]
     pu = page["utility"]
-    plist = periods()
+    stats = Stats()
+    version = data_version()
+    plist = periods(version)
     if not plist:
         return {"empty": True}
+    ctx = {"periods": plist, "batches": period_batches(version)}
+    q = lambda sql: run(sql, version, stats)
     by_period = {p["period"]: p for p in plist}
     prev_period = None
     if sel.get("period") and sel.get("compare") and sel["compare"] != sel["period"]:
@@ -288,11 +423,10 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
         if not mine:
             continue
         cols = ", ".join(f"{METRICS[t['metric']][2]} AS m{i}" for i, t in enumerate(mine))
-        cur = run(f"SELECT {cols}, {UNIT[src]} AS unit_label FROM {SRC[src]} WHERE {scope_where(scope, sel, pu)}")[0]
+        cur = q(f"SELECT {cols}, {UNIT[src]} AS unit_label FROM {source(src, scope, sel, pu, ctx)}")[0]
         prev = {}
         if prev_period and any(t["delta"] for t in mine):
-            prev = run(f"SELECT {cols} FROM {SRC[src]} "
-                       f"WHERE {scope_where(scope, {**sel, 'period': prev_period}, pu)}")[0]
+            prev = q(f"SELECT {cols} FROM {source(src, scope, {**sel, 'period': prev_period}, pu, ctx)}")[0]
         for i, t in enumerate(mine):
             label, _, _, fmt = METRICS[t["metric"]]
             tiles.append({"metric": t["metric"], "label": label, "fmt": fmt, "unit": cur["unit_label"],
@@ -318,21 +452,20 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
             cols += f", any(toString({fkey[1]})) AS fk"
         # the chart a filter is picked from keeps all its bars (the pick is highlighted), like a cross-filter
         csel = {**sel, fkey[0]: None} if fkey else sel
-        where = scope_where(scope, csel, pu, all_periods=c["all_periods"])
+        frm = source(src, scope, csel, pu, ctx, all_periods=c["all_periods"])
         group = ", ".join(f"d{i}" for i in range(len(dims)))
         if c["sort"] == "dim":
             order_by = group
         else:
             order_by = "m0 DESC NULLS LAST"
         limit = f" LIMIT {int(c['limit'])}" if c["limit"] else ""
-        rows = run(f"SELECT {dim_sql}, {cols}, {UNIT[src]} AS unit_label FROM {SRC[src]} WHERE {where} "
-                   f"GROUP BY {group} ORDER BY {order_by}{limit}")
-        total = {}
-        if c["share"]:
-            t = run(f"SELECT {', '.join(f'{METRICS[m][2]} AS m{i}' for i, m in enumerate(c['metrics']))} "
-                    f"FROM {SRC[src]} WHERE {where}")[0]
-            total = {m: num(t[f"m{i}"]) for i, m in enumerate(c["metrics"])}
-        unit = run(f"SELECT {UNIT[src]} AS unit_label FROM {SRC[src]} WHERE {where}")[0]["unit_label"]
+        rows = q(f"SELECT {dim_sql}, {cols}, {UNIT[src]} AS unit_label FROM {frm} "
+                 f"GROUP BY {group} ORDER BY {order_by}{limit}")
+        # the chart's totals (for shares) and its unit, over everything it covers
+        tcols = ", ".join(f"{METRICS[m][2]} AS m{i}" for i, m in enumerate(c["metrics"])) if c["share"] else "1 AS m0"
+        t = q(f"SELECT {tcols}, {UNIT[src]} AS unit_label FROM {frm}")[0]
+        total = {m: num(t[f"m{i}"]) for i, m in enumerate(c["metrics"])} if c["share"] else {}
+        unit = t["unit_label"]
         out_rows = []
         for r in rows:
             label = r["d0"]
@@ -359,7 +492,8 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
             "note": c["note"] if needs_unit and not unit else None,
             "all_periods": c["all_periods"], "filter_key": fkey[0] if fkey else None,
         })
-    return {"title": page["title"], "subtitle": page["subtitle"], "tiles": tiles, "charts": charts}
+    return {"title": page["title"], "subtitle": page["subtitle"], "tiles": tiles, "charts": charts,
+            "built": stats.out()}
 
 
 _DIM_TITLES = {"utility_name": "Utility", "region_name": "Island", "sector_type": "Sector type",

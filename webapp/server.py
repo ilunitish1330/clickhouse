@@ -163,6 +163,11 @@ def startup() -> None:
     SECRET = secret()
     UPLOADS.mkdir(parents=True, exist_ok=True)
     init_store()
+    try:  # the raw store and its views; moves an older install's loaded lines onto raw rows, once
+        import ub_load
+        ub_load.ensure_schema()
+    except (Exception, SystemExit) as e:
+        print(f"billing schema not ready: {e}", flush=True)
 
 
 @app.post("/api/login")
@@ -314,7 +319,7 @@ def rebuild(request: Request):
     user = current_user(request)
     if not ROLES[user["role"]].can_load:
         raise HTTPException(403, "Your role cannot run the pipeline")
-    return start_job(user, "(rebuild aggregates)", ["--aggregates"], "rebuild")
+    return start_job(user, "(Power BI tables)", ["--powerbi"], "rebuild")
 
 
 @app.get("/api/load/{job_id}")

@@ -227,7 +227,7 @@
       <header class="hero-head accent-${accent}">
         <div class="hero-title"><span class="hero-ic">${icon(page.icon)}</span>
           <div><h1>${esc(page.title)}</h1><p class="subtitle" id="subtitle">&nbsp;</p>
-          <div class="chips">${coverage ? `<span class="chip soft">${coverage}</span>` : ""}${scopeChips(page).replace(/^<div class="chips">|<\/div>$/g, "")}</div></div></div>
+          <div class="chips">${coverage ? `<span class="chip soft">${coverage}</span>` : ""}<span class="chip soft built" id="built" hidden></span>${scopeChips(page).replace(/^<div class="chips">|<\/div>$/g, "")}</div></div></div>
         <div class="filter-zone" id="filter-zone"></div>
       </header>
       <div id="dash" class="accent-${accent}"><div class="tiles">${"<div class='skeleton'></div>".repeat(4)}</div></div>`;
@@ -280,6 +280,15 @@
       catch (err) { dash.innerHTML = `<div class="note">${icon("x")} ${esc(err.message)}</div>`; dash.classList.remove("loading"); return; }
       if (d.empty) return noData(dash);
       main.querySelector("#subtitle").textContent = `${d.subtitle} · ${periodLabel()}`;
+      const b = d.built, chip = main.querySelector("#built");
+      if (b && chip) {  // how this page was made: raw rows read and aggregated just now, or reused
+        const secs = b.ms >= 1000 ? `${(b.ms / 1000).toFixed(1)} s` : `${b.ms} ms`;
+        const fresh = b.queries - b.from_cache;
+        chip.hidden = false;
+        chip.innerHTML = fresh ? `${icon("pulse")} Aggregated from ${b.raw_rows_read.toLocaleString()} raw rows · ${secs}`
+                               : `${icon("pulse")} Reused, aggregated earlier from raw rows · ${secs}`;
+        chip.title = `${b.queries} queries, ${fresh} run on the raw rows just now, ${b.from_cache} reused from memory until the data changes`;
+      }
       const pickedOf = { region: s.region || "", utility: s.utility || "", sector: s.sector, tariff: tariffApplies(page) ? s.tariff : "", period: s.period };
       d.charts.forEach((c) => { if (c.filter_key) c.picked = pickedOf[c.filter_key]; });
       const slots = d.tiles.length + (d.tiles[0] && d.tiles[0].value !== null ? 1 : 0);  // the headline tile is two wide
@@ -363,9 +372,9 @@
   }
 
   async function bgRebuild() {
-    Object.assign(bg, { phase: "upload", name: "Rebuild aggregates", upPct: 100, job: null, j: null, error: "" });
+    Object.assign(bg, { phase: "upload", name: "Power BI tables", upPct: 100, job: null, j: null, error: "" });
     bgChanged();
-    try { const { job } = await api("/api/rebuild", { method: "POST" }); bgWatch(job, "Rebuild aggregates"); }
+    try { const { job } = await api("/api/rebuild", { method: "POST" }); bgWatch(job, "Power BI tables"); }
     catch (err) { bgFail(err.message); }
   }
 
@@ -377,7 +386,7 @@
     clearInterval(bgTimer);
     bgTimer = setInterval(async () => {
       let j; try { j = await api(`/api/load/${job}`); } catch (e) { return; }
-      bg.j = j; bg.name = j.file === "(rebuild aggregates)" ? "Rebuild aggregates" : j.file;
+      bg.j = j; bg.name = j.file === "(Power BI tables)" ? "Power BI tables" : j.file;
       if (j.status !== "running") {
         clearInterval(bgTimer); bgTimer = null; bg.phase = j.status;
         if (j.status === "done") setTimeout(() => { if (bg.phase === "done" && bg.job === job) { bg.phase = null; renderBg(); } }, 20000);
@@ -405,7 +414,7 @@
     const main = shell("load");
     const run = state.me.can_run;
     main.innerHTML = mobileTop("Data Load") + `
-      <div class="topbar"><div><h1>Data Load</h1><p class="subtitle">${run ? "Upload a Statistic Report export and press Run: ClickHouse is loaded and every table, aggregate and dashboard is rebuilt." : "What has been loaded, and when."}</p></div></div>
+      <div class="topbar"><div><h1>Data Load</h1><p class="subtitle">${run ? "Upload a Statistic Report export and press Run: its rows are stored in ClickHouse as they are. Each dashboard reads and aggregates the raw rows it needs when it is opened." : "What has been loaded, and when."}</p></div></div>
       <div class="panels">
         ${run ? `<section class="card">
           <div class="card-head"><div><h3>Load a billing export</h3><div class="meta">.xlsx, .csv, .tsv, .txt, or a .zip of them</div></div><span id="job-status"></span></div>
@@ -414,13 +423,13 @@
           <div id="picked"></div>
           <div class="steps" id="steps">
             <div class="step" data-s="0"><b>Upload</b>File to the server</div>
-            <div class="step" data-s="1"><b>Stage</b>Raw rows into ClickHouse</div>
-            <div class="step" data-s="2"><b>Model</b>Fact and dimensions</div>
-            <div class="step" data-s="3"><b>Aggregate</b>Tables for dashboards</div>
+            <div class="step" data-s="1"><b>Read</b>Rows out of the file</div>
+            <div class="step" data-s="2"><b>Store</b>Raw rows in ClickHouse</div>
+            <div class="step" data-s="3"><b>Check</b>Rows and amounts match</div>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px">
             <button class="btn primary" id="run" disabled>${icon("pulse")}Run</button>
-            <button class="btn" id="rebuild" title="Rebuild aggregates from what is already loaded">Rebuild aggregates only</button>
+            <button class="btn" id="rebuild" title="Only needed before a Power BI refresh: the dashboards here aggregate the raw rows themselves">Build Power BI tables</button>
           </div>
           <div class="eta" id="eta" hidden><div class="eta-row"><span id="eta-text"></span><span id="eta-left"></span></div><div class="eta-track"><div class="eta-bar" id="eta-bar"></div></div></div>
           <div class="console" id="console" hidden></div>
@@ -483,7 +492,7 @@
       status(busy ? "running" : bg.phase);
       if (bg.phase === "upload") {
         setSteps(0);
-        showConsole(bg.name === "Rebuild aggregates" ? "Starting the rebuild…" : `Uploading ${bg.name} (${(bg.size / 1e6).toFixed(1)} MB) · ${Math.round(bg.upPct)}%\nYou can open other pages meanwhile; the load carries on.`);
+        showConsole(bg.name === "Power BI tables" ? "Building the Power BI tables…" : `Uploading ${bg.name} (${(bg.size / 1e6).toFixed(1)} MB) · ${Math.round(bg.upPct)}%\nYou can open other pages meanwhile; the load carries on.`);
         const box = main.querySelector("#eta"); box.hidden = false;
         main.querySelector("#eta-bar").style.width = bg.upPct + "%"; main.querySelector("#eta-bar").classList.remove("failed");
         main.querySelector("#eta-text").textContent = "Uploading the file"; main.querySelector("#eta-left").textContent = `${Math.round(bg.upPct)}%`;
@@ -495,7 +504,7 @@
         if (j.status === "done") c.textContent += "\n\nDone. The dashboards now show this data.";
         c.scrollTop = c.scrollHeight;
         showEta(j);
-        setSteps(/aggregates rebuilt/.test(text) ? 4 : /rebuilding dimensions|rows read/.test(text) ? 3 : /rows staged/.test(text) ? 2 : 1, j.status === "done");
+        setSteps(/raw rows stored|Power BI tables built/.test(text) ? 4 : /rows read, .* stored/.test(text) ? 3 : /rows staged/.test(text) ? 2 : 1, j.status === "done");
       } else { showConsole("Starting…"); setSteps(1); }
       if (lastPhase === "running" && !busy) refreshTables();
       lastPhase = bg.phase;

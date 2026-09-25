@@ -148,14 +148,17 @@ loads from the exported file:
 ```bash
 python3 find_source.py                                   # search every database this login can see for the source
 python3 ub_load.py "Statistic Report24092026.csv"        # or the .zip; re-loading a file replaces it
-python3 ub_load.py --aggregates                          # rebuild dims + aggregates only
+python3 ub_load.py --powerbi                             # build the Power BI tables, before a Power BI refresh
 ```
 
-Star schema: `fact_billing` (one row per billing line: amount, quantity) with `dim_customer`,
-`dim_connection`, `dim_tariff` (tariff → category → sector), `dim_utility`, `dim_region`,
-`dim_charge_type` and `dim_date`. Aggregates: `agg_billing_monthly` (the main Power BI table),
-`agg_customer_monthly`, `agg_connection_monthly` and `agg_water_network_monthly`.
-`SELECT * FROM ub.v_batches` shows what's loaded.
+Raw first: a load only stores the exported rows, as text, in `ub.raw_rows` (plus each batch's
+billing month in `ub.raw_batches`). Nothing is aggregated at load time. The view `ub.v_lines`
+(`ub_views.sql`) parses the raw rows into billing lines whenever it is queried, and the web app
+aggregates the lines each dashboard needs when it is opened, reading only the batches, utilities
+and islands it asks for. `ub.fact_billing` is the same lines under the name the Power BI SQL
+(`ub_aggregates.sql`: dims, `agg_*`, `pbi_*`) reads; those tables are built only by `--powerbi`.
+`SELECT * FROM ub.v_batches` shows what's loaded. An older install whose lines sit in a
+`fact_billing` table is moved onto raw rows, and checked, on the first run.
 
 - Quantity is kWh for electricity and m³ for water. Never sum it across `utility_code`.
   `consumption_qty` counts consumption lines only.
