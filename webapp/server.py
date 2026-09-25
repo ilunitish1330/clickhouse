@@ -33,7 +33,7 @@ sys.path[:0] = [str(REPO), str(HERE)]
 
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import ax_load  # noqa: E402  (.env, ch())
@@ -418,7 +418,13 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+    # stamp the script and style links with their file times, so after a git pull the browser
+    # fetches the new files instead of a cached copy
+    html = (HERE / "static" / "index.html").read_text()
+    for name in ("app.css", "charts.js", "app.js"):
+        v = int((HERE / "static" / name).stat().st_mtime)
+        html = html.replace(f'/static/{name}"', f'/static/{name}?v={v}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 if __name__ == "__main__":

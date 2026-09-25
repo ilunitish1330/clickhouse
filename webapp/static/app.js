@@ -117,7 +117,11 @@
       const list = f.tariffs.filter((t) => t.utilities.map(Number).includes(u));
       return list.length ? `<optgroup label="${esc(UTIL_NAMES[u])}">${list.map((t) => opt(t.name, t.name, tariffApplies(page) ? s.tariff : "")).join("")}</optgroup>` : "";
     }).join("");
-    const tariffs = field("f-tariff", "Tariff group", opt("", "All tariff groups", "") + groups, `class="wide-sel"`);
+    // only the tariff groups of the utility on screen: the page's own, or the one picked in the Utility filter
+    const narrowed = shown.length === 1 && f.utilities.length > 1;
+    const tariffOpts = narrowed ? f.tariffs.filter((t) => t.utilities.map(Number).includes(shown[0])).map((t) => opt(t.name, t.name, tariffApplies(page) ? s.tariff : "")).join("") : groups;
+    const tariffs = field("f-tariff", narrowed ? `Tariff group · ${UTIL_NAMES[shown[0]]}` : "Tariff group",
+      opt("", narrowed ? `All ${UTIL_NAMES[shown[0]].toLowerCase()} tariffs` : "All tariff groups", "") + tariffOpts, `class="wide-sel"`);
     return `<div class="filters" id="filters"><label>Period<select id="f-period">${periods}</select></label>${compare}${regions}${utils}${sectors}${tariffs}</div>`;
   }
 
@@ -244,7 +248,10 @@
         case "f-period": s.period = v; s.compare = ""; break;  // a comparison belongs to the period it was picked for
         case "f-compare": s.compare = v; break;
         case "f-region": s.region = +v; break;
-        case "f-utility": s.utility = +v; break;
+        case "f-utility":  // a tariff group of another utility no longer fits: drop it
+          s.utility = +v;
+          if (s.tariff && s.utility && !(tariffInfo(s.tariff)?.utilities || []).map(Number).includes(s.utility)) s.tariff = "";
+          break;
         case "f-sector": s.sector = v; break;
         case "f-tariff": s.tariff = v; break;
       }
