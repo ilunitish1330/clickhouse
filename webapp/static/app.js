@@ -61,6 +61,7 @@
       <aside class="side" id="side">
         <div class="brandmark"><div class="logo">${icon("drop")}</div><div>PUC Analytics<small>Public Utilities Corporation</small></div></div>
         <nav class="nav nav-scroll">${me.pages.length ? `<div class="nav-group">Dashboards</div>${nav}` : ""}${data}${admin}</nav>
+        <a href="#/load" class="bg-job" id="bg-job" hidden></a>
         <div class="me">
           <div class="me-card"><div class="avatar">${esc(initials(me.full_name))}</div>
             <div><b>${esc(me.full_name)}</b><small>${esc(me.role_title)}${me.island !== "All islands" ? " · " + esc(me.island) : ""}</small></div></div>
@@ -76,6 +77,7 @@
     document.getElementById("theme-btn").onclick = toggleTheme;
     document.getElementById("pw-btn").onclick = () => passwordModal(false);
     document.getElementById("out-btn").onclick = async () => { await api("/api/logout", { method: "POST" }); state.me = null; showLogin(); };
+    renderBg();
     return document.getElementById("main");
   }
 
@@ -220,8 +222,88 @@
       <p>${first ? `Go to <a href="#/${first.id}">${esc(first.title)}</a>.` : state.me.can_load ? `Go to <a href="#/load">Data Load</a>.` : ""}</p></div>`;
   }
 
+  // ------------------------------------------------------------------ background load
+  // The upload and the load job are tracked here, not by the Data Load page, so moving to
+  // another page (or reloading once the upload is done) never loses them.
+  const bg = { phase: null, name: "", size: 0, upPct: 0, job: null, j: null, error: "" };
+  let bgTimer = null, bgListener = null;
+  const bgBusy = () => bg.phase === "upload" || bg.phase === "running";
+
+  function bgChanged() { renderBg(); if (bgListener) bgListener(); }
+
+  function renderBg() {
+    const el = document.getElementById("bg-job"); if (!el) return;
+    if (!bg.phase) { el.hidden = true; return; }
+    el.hidden = false; el.className = `bg-job ${bg.phase}`;
+    const est = bg.j?.estimate || 0, pct = bg.phase === "upload" ? bg.upPct
+      : bg.phase === "running" ? Math.min(95, ((bg.j?.elapsed || 0) / Math.max(est, 1)) * 100) : 100;
+    const what = bg.phase === "upload" ? "Uploading" : bg.phase === "running" ? "Loading data"
+      : bg.phase === "done" ? "Load finished" : "Load failed";
+    const right = bg.phase === "upload" ? `${Math.round(bg.upPct)}%` : bg.phase === "running" ? `${Math.round(bg.j?.elapsed || 0)} s` : "";
+    el.title = `${bg.name} (open Data Load)`;
+    el.innerHTML = `<div class="bg-row">${bgBusy() ? `<span class="spin"></span>` : icon(bg.phase === "done" ? "check" : "x")}<b>${what}</b><span class="bg-right">${right}</span></div>
+      <div class="bg-track"><div class="bg-bar" style="width:${pct}%"></div></div>`;
+  }
+
+  function toast(msg, kind) {
+    const t = document.createElement("div"); t.className = `toast ${kind || ""}`; t.setAttribute("role", "status"); t.innerHTML = msg;
+    document.body.appendChild(t); setTimeout(() => t.classList.add("gone"), 5000); setTimeout(() => t.remove(), 5600);
+  }
+
+  function bgUpload(file) {
+    Object.assign(bg, { phase: "upload", name: file.name, size: file.size, upPct: 0, job: null, j: null, error: "" });
+    bgChanged();
+    const fd = new FormData(); fd.append("file", file);
+    const x = new XMLHttpRequest();
+    x.open("POST", "/api/load");
+    x.upload.onprogress = (e) => { if (e.lengthComputable) { bg.upPct = (e.loaded / e.total) * 100; bgChanged(); } };
+    x.onload = () => {
+      let d = {}; try { d = JSON.parse(x.responseText); } catch (e) {}
+      if (x.status === 200 && d.job) bgWatch(d.job, file.name);
+      else bgFail(d.detail || `Upload failed (${x.status})`);
+    };
+    x.onerror = () => bgFail("Upload failed: the connection to the server was lost");
+    x.send(fd);
+  }
+
+  async function bgRebuild() {
+    Object.assign(bg, { phase: "upload", name: "Rebuild aggregates", upPct: 100, job: null, j: null, error: "" });
+    bgChanged();
+    try { const { job } = await api("/api/rebuild", { method: "POST" }); bgWatch(job, "Rebuild aggregates"); }
+    catch (err) { bgFail(err.message); }
+  }
+
+  function bgFail(msg) { bg.phase = "failed"; bg.error = msg; bgChanged(); toast(`${icon("x")}<span>${esc(msg)}</span>`, "bad"); }
+
+  function bgWatch(job, name) {
+    Object.assign(bg, { phase: "running", job, name: name || bg.name });
+    bgChanged();
+    clearInterval(bgTimer);
+    bgTimer = setInterval(async () => {
+      let j; try { j = await api(`/api/load/${job}`); } catch (e) { return; }
+      bg.j = j; bg.name = j.file === "(rebuild aggregates)" ? "Rebuild aggregates" : j.file;
+      if (j.status !== "running") {
+        clearInterval(bgTimer); bgTimer = null; bg.phase = j.status;
+        if (j.status === "done") setTimeout(() => { if (bg.phase === "done" && bg.job === job) { bg.phase = null; renderBg(); } }, 20000);
+        if (j.status === "done") {
+          try { state.me = await api("/api/me"); } catch (e) {}
+          const ps = state.me?.filters.periods || []; if (!state.filters.period && ps.length) state.filters.period = ps[ps.length - 1].period;
+        }
+        if (location.hash !== "#/load") toast(j.status === "done" ? `${icon("check")}<span><b>${esc(bg.name)}</b> is loaded. The dashboards now show it.</span>`
+                                                                   : `${icon("x")}<span><b>${esc(bg.name)}</b> failed. See Data Load for the log.</span>`, j.status === "done" ? "good" : "bad");
+      }
+      bgChanged();
+    }, 1000);
+  }
+
+  async function bgResume() {  // after a sign-in or page reload: pick up a load that is still running
+    if (!state.me?.can_load || bgTimer) return;
+    try { const d = await api("/api/loads"); if (d.running) bgWatch(d.running.id, d.running.file); } catch (e) {}
+  }
+
+  addEventListener("beforeunload", (e) => { if (bg.phase === "upload") { e.preventDefault(); e.returnValue = ""; } });
+
   // ------------------------------------------------------------------ data load
-  let poll = null;
   async function loadPage() {
     if (!state.me.can_load) return notAllowed();
     const main = shell("load");
@@ -259,7 +341,7 @@
       file = f;
       if (!f && main.querySelector("#file")) main.querySelector("#file").value = "";  // so the same file can be chosen again
       main.querySelector("#picked").innerHTML = f ? `<div class="file-pill"><span>${icon("table")} <b>${esc(f.name)}</b> <span class="pill">${(f.size / 1e6).toFixed(1)} MB</span></span><button class="btn small ghost" id="unpick" aria-label="Remove file">${icon("x")}</button></div>` : "";
-      main.querySelector("#run").disabled = !f;
+      main.querySelector("#run").disabled = !f || bgBusy();
       main.querySelector("#unpick")?.addEventListener("click", (e) => { e.preventDefault(); pick(null); });
     };
     if (run) {
@@ -268,17 +350,8 @@
       ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
       ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
       drop.addEventListener("drop", (e) => pick(e.dataTransfer.files[0]));
-      main.querySelector("#run").addEventListener("click", async () => {
-        const fd = new FormData(); fd.append("file", file);
-        setSteps(0); showConsole(`Uploading ${file.name}…`);
-        try { const { job } = await api("/api/load", { method: "POST", body: fd }); watch(job); }
-        catch (err) { showConsole(err.message); status("failed"); }
-      });
-      main.querySelector("#rebuild").addEventListener("click", async () => {
-        setSteps(3); showConsole("Rebuilding aggregates…");
-        try { const { job } = await api("/api/rebuild", { method: "POST" }); watch(job); }
-        catch (err) { showConsole(err.message); status("failed"); }
-      });
+      main.querySelector("#run").addEventListener("click", () => { const f = file; pick(null); bgUpload(f); });
+      main.querySelector("#rebuild").addEventListener("click", () => bgRebuild());
     }
     function showConsole(t) { const c = main.querySelector("#console"); c.hidden = false; c.textContent = t; }
     function status(s) { const el = main.querySelector("#job-status"); if (el) el.innerHTML = `<span class="status ${s}">${{ running: "Running", done: "Finished", failed: "Failed" }[s]}</span>`; }
@@ -305,31 +378,39 @@
         main.querySelector("#eta-left").textContent = "";
       }
     }
-    function watch(job) {
-      status("running"); main.querySelector("#run").disabled = true; main.querySelector("#rebuild").disabled = true;
-      clearInterval(poll);
-      poll = setInterval(async () => {
-        let j; try { j = await api(`/api/load/${job}`); } catch (e) { return; }
-        const text = j.log.join("\n"), c = main.querySelector("#console");
-        if (!c) return clearInterval(poll);
-        c.textContent = text || "Starting…"; c.scrollTop = c.scrollHeight;
+    let lastPhase = null;
+    function reflect() {  // draw the background load's state; runs on every change while this page is open
+      if (!main.isConnected) { bgListener = null; return; }
+      if (!run || !bg.phase) return;
+      const busy = bgBusy();
+      main.querySelector("#run").disabled = busy || !file; main.querySelector("#rebuild").disabled = busy;
+      status(busy ? "running" : bg.phase);
+      if (bg.phase === "upload") {
+        setSteps(0);
+        showConsole(bg.name === "Rebuild aggregates" ? "Starting the rebuild…" : `Uploading ${bg.name} (${(bg.size / 1e6).toFixed(1)} MB) · ${Math.round(bg.upPct)}%\nYou can open other pages meanwhile; the load carries on.`);
+        const box = main.querySelector("#eta"); box.hidden = false;
+        main.querySelector("#eta-bar").style.width = bg.upPct + "%"; main.querySelector("#eta-bar").classList.remove("failed");
+        main.querySelector("#eta-text").textContent = "Uploading the file"; main.querySelector("#eta-left").textContent = `${Math.round(bg.upPct)}%`;
+      } else if (bg.phase === "failed" && !bg.j) {
+        showConsole(bg.error);
+      } else if (bg.j) {
+        const j = bg.j, text = j.log.join("\n"), c = main.querySelector("#console");
+        c.hidden = false; c.textContent = text || "Starting…";
+        if (j.status === "done") c.textContent += "\n\nDone. The dashboards now show this data.";
+        c.scrollTop = c.scrollHeight;
         showEta(j);
         setSteps(/aggregates rebuilt/.test(text) ? 4 : /rebuilding dimensions|rows read/.test(text) ? 3 : /rows staged/.test(text) ? 2 : 1, j.status === "done");
-        if (j.status !== "running") {
-          clearInterval(poll); status(j.status);
-          main.querySelector("#rebuild").disabled = false; pick(null);
-          if (j.status === "done") {
-            state.me = await api("/api/me"); refreshTables();
-            const ps = state.me.filters.periods; if (!state.filters.period && ps.length) state.filters.period = ps[ps.length - 1].period; c.textContent += "\n\nDone. The dashboards now show this data."; }
-        }
-      }, 1000);
+      } else { showConsole("Starting…"); setSteps(1); }
+      if (lastPhase === "running" && !busy) refreshTables();
+      lastPhase = bg.phase;
     }
     async function refreshTables() {
       const d = await api("/api/loads");
       main.querySelector("#batches").innerHTML = d.batches.length ? `<div class="tbl-wrap"><table class="data"><thead><tr><th>Period</th><th class="n">Billing lines</th><th class="n">Invoices</th><th class="n">Amount (${CURRENCY})</th></tr></thead><tbody>${d.batches.map((b) => `<tr><td>${esc(fmtPeriod(b.period))}</td><td class="n">${(+b.lines).toLocaleString()}</td><td class="n">${(+b.invoices).toLocaleString()}</td><td class="n">${Math.round(b.amount).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">Nothing loaded yet.</div>`;
       main.querySelector("#history").innerHTML = d.history.length ? `<div class="tbl-wrap scroll-y"><table class="data"><thead><tr><th>When</th><th>File</th><th class="n">Rows</th><th class="n">Amount</th></tr></thead><tbody>${d.history.map((h) => `<tr><td class="num">${esc(h.loaded_at)}</td><td>${esc(h.file_name)}</td><td class="n">${(+h.rows).toLocaleString()}</td><td class="n">${Math.round(h.amount).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">No loads recorded.</div>`;
-      if (d.running && run && !poll) watch(d.running.id);
+      if (d.running && !bgTimer) bgWatch(d.running.id, d.running.file);  // e.g. started by another operator
     }
+    bgListener = reflect; reflect();
     await refreshTables();
   }
   const fmtPeriod = (p) => new Date(p + "T00:00:00").toLocaleDateString(undefined, { month: "short", year: "numeric" });
@@ -433,6 +514,7 @@
     if (!state.filters.period && periods.length) state.filters.period = periods[periods.length - 1].period;
     if (!state.routed) { addEventListener("hashchange", route); state.routed = true; }
     route();
+    bgResume();
   }
   boot();
 })();

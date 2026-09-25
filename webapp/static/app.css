@@ -354,3 +354,30 @@ td.barcell { min-width: 170px; }
 @media (max-width: 860px) { .tile.hero { grid-column: 1 / -1; } .hero-head { padding: 16px; } .tile .value { font-size: 24px; } .tile .value small { font-size: 12px; } }
 .tiles.fill > .tile:last-child { grid-column: span var(--fill); }
 @media (max-width: 1250px) { .tiles.fill > .tile:last-child { grid-column: auto; } }
+
+/* ---- background load: sidebar indicator and toasts ---- */
+.bg-job { display: block; margin: 6px 0 2px; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.1); color: #dce6f2; text-decoration: none; }
+.bg-job[hidden] { display: none; }
+.bg-job:hover { background: rgba(255,255,255,.1); }
+.bg-job .bg-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.bg-job .bg-row b { font-weight: 600; color: #fff; }
+.bg-job .bg-row svg.i { width: 16px; height: 16px; }
+.bg-job.done .bg-row svg.i { color: #4fd18b; }
+.bg-job.failed .bg-row svg.i { color: #ff8a80; }
+.bg-job .bg-right { margin-left: auto; font-size: 12px; color: #9fb1c6; font-variant-numeric: tabular-nums; }
+.bg-track { margin-top: 7px; height: 4px; border-radius: 4px; background: rgba(255,255,255,.12); overflow: hidden; }
+.bg-bar { height: 100%; border-radius: 4px; background: #5aa2f0; transition: width .6s ease; }
+.bg-job.done .bg-bar { background: #4fd18b; }
+.bg-job.failed .bg-bar { background: #ff8a80; }
+.spin { width: 16px; height: 16px; flex: none; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: #5aa2f0; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.toast { position: fixed; right: 20px; bottom: 20px; z-index: 60; max-width: 380px; display: flex; gap: 10px; align-items: center;
+  padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); font-size: 14px; transition: opacity .5s, transform .5s; animation: toast-in .3s ease; }
+.toast svg.i { width: 18px; height: 18px; flex: none; }
+.toast.good svg.i { color: var(--good-ink); }
+.toast.bad svg.i { color: var(--critical); }
+.toast.gone { opacity: 0; transform: translateY(10px); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(10px); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } .toast, .bg-bar { transition: none; animation: none; } }
