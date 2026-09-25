@@ -1,3 +1,10 @@
+# PUC Analytics web app (`webapp/`)
+
+Role-based dashboards in the browser, and a **Run** button that loads a billing export into
+ClickHouse: `python3 webapp/server.py`, then open `http://<server-ip>:8020`. See `webapp/README.md`.
+
+---
+
 # Any raw data → ClickHouse, aggregated automatically (`auto_load.py`)
 
 Give it a SQL query or an Excel/CSV file and nothing else. It lands the raw rows in ClickHouse,

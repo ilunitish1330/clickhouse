@@ -181,7 +181,7 @@ FROM ub.dim_charge_type;
 -- whether the customer also takes the other utility.
 CREATE OR REPLACE TABLE ub.pbi_customer_period
 ENGINE = MergeTree ORDER BY (period, utility_code, customer_id) AS
-SELECT period, utility_code, customer_id,
+SELECT period, utility_code, customer_id, region_code,
        toDecimal64(amt, 4) AS amount, toDecimal64(cons, 4) AS consumption_qty, inv AS invoices,
        multiIf(amt < 0, '1 Credit', amt < 100, '2 Under 100', amt < 500, '3 100-500',
                amt < 1000, '4 500-1,000', amt < 5000, '5 1,000-5,000',
@@ -194,7 +194,8 @@ FROM (
               count() OVER (PARTITION BY period, utility_code) AS n,
               max(utility_code = 1) OVER (PARTITION BY period, customer_id) AS has_elec,
               max(utility_code = 3) OVER (PARTITION BY period, customer_id) AS has_water
-    FROM (SELECT period_month AS period, utility_code, customer_id, sum(amount) AS amt,
+    FROM (SELECT period_month AS period, utility_code, customer_id, any(region_code) AS region_code,
+                 sum(amount) AS amt,
                  sumIf(quantity, charge_type = 1) AS cons, uniqExact(invoice_id) AS inv
           FROM ub.fact_billing GROUP BY period, utility_code, customer_id));
 
@@ -229,3 +230,34 @@ FROM (
     JOIN ub.pbi_period AS p ON p.period = b.period
     WINDOW w AS (PARTITION BY b.utility_code, b.connection_id ORDER BY p.period_index
                  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING));
+
+-- ============ Web app layer (webapp/) ============
+-- The billing lines with every label joined in, so each dashboard query is one
+-- scan with no joins. Rebuilt with the rest after every load.
+CREATE OR REPLACE TABLE ub.app_billing
+ENGINE = MergeTree ORDER BY (period, utility_code, region_code) AS
+SELECT b.* EXCEPT (utility_code, region_code, tariff_code, charge_key),
+       b.utility_code AS utility_code, b.region_code AS region_code, b.tariff_code AS tariff_code,
+       b.charge_key AS charge_key, u.utility_name, r.region_name, t.tariff_desc, t.category_desc, t.sector_desc, t.sector_type,
+       c.charge_desc, c.value_desc, c.origin_desc, c.is_pv, c.is_free_text
+FROM ub.pbi_billing AS b
+LEFT JOIN ub.dim_utility AS u ON u.utility_code = b.utility_code
+LEFT JOIN ub.dim_region AS r ON r.region_code = b.region_code
+LEFT JOIN ub.pbi_tariff AS t ON t.tariff_code = b.tariff_code
+LEFT JOIN ub.pbi_charge_type AS c ON c.charge_key = b.charge_key;
+
+CREATE OR REPLACE TABLE ub.app_customer_period
+ENGINE = MergeTree ORDER BY (period, utility_code, customer_id) AS
+SELECT c.* EXCEPT (utility_code, region_code), c.utility_code AS utility_code,
+       c.region_code AS region_code, u.utility_name, r.region_name
+FROM ub.pbi_customer_period AS c
+LEFT JOIN ub.dim_utility AS u ON u.utility_code = c.utility_code
+LEFT JOIN ub.dim_region AS r ON r.region_code = c.region_code;
+
+CREATE OR REPLACE TABLE ub.app_connection_period
+ENGINE = MergeTree ORDER BY (period, utility_code, connection_id) AS
+SELECT c.* EXCEPT (utility_code, region_code), c.utility_code AS utility_code,
+       c.region_code AS region_code, u.utility_name, r.region_name
+FROM ub.pbi_connection_period AS c
+LEFT JOIN ub.dim_utility AS u ON u.utility_code = c.utility_code
+LEFT JOIN ub.dim_region AS r ON r.region_code = c.region_code;

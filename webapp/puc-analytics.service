@@ -1,0 +1,17 @@
+# Starts the PUC Analytics web app at boot and restarts it if it stops.
+#   sudo cp webapp/puc-analytics.service /etc/systemd/system/
+#   (edit User= and the two paths below if yours differ)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now puc-analytics
+[Unit]
+Description=PUC Analytics web app
+After=network-online.target
+
+[Service]
+User=digidelight-ai
+WorkingDirectory=/home/digidelight-ai/clickhouse-1/clickhouse/webapp
+ExecStart=/home/digidelight-ai/clickhouse-learn/.venv/bin/python server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

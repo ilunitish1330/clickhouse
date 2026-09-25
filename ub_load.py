@@ -100,15 +100,27 @@ def decode(data: bytes) -> str:
         return data.decode("cp1252", errors="replace")
 
 
+def xlsx_text(data: bytes) -> str:
+    """An .xlsx sheet as tab-separated text. Real dates survive here as
+    yyyy-mm-dd -- unlike a CSV that Excel has re-saved."""
+    from auto_load import read_xlsx  # needs openpyxl
+    header, rows = read_xlsx(data)
+    clean = lambda v: str(v).replace("\t", " ").replace("\n", " ")
+    return "\n".join("\t".join(clean(v) for v in r) for r in [header, *rows])
+
+
 def read_rows(path: Path):
-    """Yield (source name, text) for a csv/tsv/txt file or each one inside a zip."""
+    """Yield (source name, text) for a csv/tsv/txt/xlsx file or each one inside a zip."""
+    def one(name, data):
+        return xlsx_text(data) if name.lower().endswith((".xlsx", ".xlsm")) else decode(data)
+
     if path.suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as z:
             for name in z.namelist():
-                if name.lower().endswith((".csv", ".tsv", ".txt")):
-                    yield name, decode(z.read(name))
+                if name.lower().endswith((".csv", ".tsv", ".txt", ".xlsx", ".xlsm")):
+                    yield name, one(name, z.read(name))
     else:
-        yield path.name, decode(path.read_bytes())
+        yield path.name, one(path.name, path.read_bytes())
 
 
 def stage(name: str, text: str) -> int:
@@ -146,9 +158,12 @@ def stage(name: str, text: str) -> int:
 def load(paths: list[str]) -> None:
     ax_load.run_sql_file(HERE / "ub_schema.sql")
     for p in paths:
+        print(f"reading {Path(p).name} ...", flush=True)
         for name, text in read_rows(Path(p)):
             t0 = time.time()
+            print(f"{name}: staging raw rows into ClickHouse ...", flush=True)
             n = stage(name, text)
+            print(f"{name}: {n:,} rows staged, building the fact table ...", flush=True)
             batches = ch("SELECT DISTINCT BatchId FROM ub.raw_load FORMAT TSV").split()
             for b in batches:  # a re-load replaces, never doubles
                 ch(f"ALTER TABLE ub.fact_billing DROP PARTITION '{b}'")
@@ -170,6 +185,7 @@ def load(paths: list[str]) -> None:
 
 def aggregates() -> None:
     t0 = time.time()
+    print("rebuilding dimensions and aggregates ...", flush=True)
     ax_load.run_sql_file(HERE / "ub_aggregates.sql")
     print(f"ub aggregates rebuilt  {time.time() - t0:.1f}s")
     print(ch("SELECT * FROM ub.v_batches ORDER BY period_month FORMAT PrettyCompactNoEscapes"))

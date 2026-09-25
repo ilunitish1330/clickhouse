@@ -420,7 +420,7 @@ def pages() -> list[tuple[str, str, dict | None, list]]:
     out.append(("p06_customers", "6 Customers and Connections", None, [
         *slicers(period, util_single, single=util_single),
         *cards("Distinct Customers", "Distinct Connections", "Distinct Meters", "Average Consumption per Connection",
-               "Customer Growth %", "Multi-utility Customers"),
+               "Customer Growth %", "Invoice Count"),  # accounts are per utility: none hold both
         table(g3(0), [column("CustomerPeriod", "customer_id"), measure("Customer Revenue")], "Top customers",
               sort=(measure("Customer Revenue"), "Descending")),
         bar("clusteredColumnChart", g3(1), column("CustomerPeriod", "pareto_band"), "Customer Revenue Share %",

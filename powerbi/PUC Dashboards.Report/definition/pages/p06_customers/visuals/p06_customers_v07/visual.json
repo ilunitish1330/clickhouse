@@ -20,14 +20,14 @@
                 "Measure": {
                   "Expression": {
                     "SourceRef": {
-                      "Entity": "CustomerPeriod"
+                      "Entity": "Billing"
                     }
                   },
-                  "Property": "Multi-utility Customers"
+                  "Property": "Invoice Count"
                 }
               },
-              "queryRef": "CustomerPeriod.Multi-utility Customers",
-              "nativeQueryRef": "Multi-utility Customers"
+              "queryRef": "Billing.Invoice Count",
+              "nativeQueryRef": "Invoice Count"
             }
           ]
         }
