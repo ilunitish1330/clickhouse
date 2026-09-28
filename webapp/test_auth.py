@@ -162,6 +162,10 @@ def signed_in(c) -> str | None:
 def main() -> None:
     admin = client()
     ok(admin.post("/api/login", json={"username": "admin", "password": PW}).status_code == 200, "admin signs in")
+    ok(not admin.get("/api/me").json()["restart_needed"], "no restart warning when the server runs the code on disk")
+    saved_version, server.VERSION = server.VERSION, "0000000 2000-01-01"
+    ok(admin.get("/api/me").json()["restart_needed"] or not saved_version, "warning when the code on disk is newer")
+    server.VERSION = saved_version
     cfg = admin.get("/api/auth/config").json()
     ok([p["id"] for p in cfg["sso"]] == ["google", "microsoft"] and cfg["forgot"], cfg)
 

@@ -182,6 +182,10 @@
     document.getElementById("pw-btn").onclick = () => passwordModal(false);
     document.getElementById("out-btn").onclick = async () => { await api("/api/logout", { method: "POST" }); state.me = null; showLogin(); };
     renderBg();
+    if (me.restart_needed) {  // new files are on disk but the server process is still the old one
+      const main = document.getElementById("main");
+      main.insertAdjacentHTML("beforebegin", `<div class="restart-bar">${icon("x")}<span><b>The app was updated but the server was not restarted</b>, so some features (such as several roles per user) do not work yet. Restart it: Ctrl+C in its terminal, then start it again. Running: ${esc(me.version)}.</span></div>`);
+    }
     return document.getElementById("main");
   }
 

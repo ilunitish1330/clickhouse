@@ -975,3 +975,7 @@ td.n .btn + .btn { margin-left: 6px; }
 .verify-msg:empty { display: none; }
 .verify-msg.ok { color: var(--good-ink); }
 .verify-msg.bad { color: var(--critical); }
+.restart-bar { position: fixed; z-index: 50; left: 50%; transform: translateX(-50%); top: 10px; max-width: min(760px, calc(100vw - 32px));
+  display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.45;
+  background: #fff4e0; color: #7a4a00; border: 1px solid #f3c77a; box-shadow: var(--shadow); }
+.restart-bar svg.i { flex: none; width: 16px; height: 16px; margin-top: 2px; }

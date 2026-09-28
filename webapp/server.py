@@ -602,6 +602,9 @@ def me(request: Request):
         "roles": role_ids(user["role"]), "role_title": role.title, "role_description": role.description,
         "email": user["email"],
         "has_password": bool(user["pw_hash"]),
+        # the code on disk was updated (git pull) but this server still runs the old one
+        "restart_needed": role.can_admin and bool(VERSION) and app_version() != VERSION,
+        "version": VERSION,
         "island": ISLANDS[int(user["region_code"])], "must_change": str(user["must_change"]) == "1",
         "pages": pages, "can_load": role.can_load or "load_history" in role.pages, "can_run": role.can_load,
         "can_admin": role.can_admin, "can_review": role.can_review,
