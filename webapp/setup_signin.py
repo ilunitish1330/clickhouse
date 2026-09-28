@@ -173,30 +173,39 @@ def wizard() -> dict:
         print("   In https://console.cloud.google.com : APIs & Services > OAuth consent screen (set it up once), then\n"
               "   Credentials > Create credentials > OAuth client ID > Web application, with this redirect URI:\n"
               f"      {base}/api/auth/oidc/google/callback")
-        new["GOOGLE_CLIENT_ID"] = ask("Client ID", env.get("GOOGLE_CLIENT_ID", ""), allow_empty=False,
+        new["GOOGLE_CLIENT_ID"] = ask("Client ID (Enter alone skips Google for now)", env.get("GOOGLE_CLIENT_ID", ""),
                                       check=lambda v: "" if v.endswith(".apps.googleusercontent.com") else
                                       "it ends with .apps.googleusercontent.com")
-        new["GOOGLE_CLIENT_SECRET"] = ask("Client secret", env.get("GOOGLE_CLIENT_SECRET", ""), hidden=True, allow_empty=False)
+        if new["GOOGLE_CLIENT_ID"]:
+            new["GOOGLE_CLIENT_SECRET"] = ask("Client secret", env.get("GOOGLE_CLIENT_SECRET", ""), hidden=True,
+                                              allow_empty=False)
+        else:
+            new["GOOGLE_CLIENT_SECRET"] = ""
+            print("   Google sign-in skipped; run this again when you have the client ID.")
     elif https:
         new.update(GOOGLE_CLIENT_ID="", GOOGLE_CLIENT_SECRET="")
 
     print("\n4. \"Continue with Microsoft\"")
     if not https:
         print("   Needs an https:// address (Microsoft refuses http except localhost) -- skipped for now.")
+    guid = re.compile(r"^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+    if https:
+        new.update(MS_CLIENT_ID="", MS_CLIENT_SECRET="")
     if https and yes("Set up Microsoft sign-in?", bool(env.get("MS_CLIENT_ID"))):
         print("   In https://entra.microsoft.com : App registrations > New registration. Redirect URI, platform \"Web\":\n"
               f"      {base}/api/auth/oidc/microsoft/callback\n"
               "   Then Certificates & secrets > New client secret, and copy its Value (not its ID).")
-        guid = re.compile(r"^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
-        new["MS_CLIENT_ID"] = ask("Application (client) ID", env.get("MS_CLIENT_ID", ""), allow_empty=False,
+        new["MS_CLIENT_ID"] = ask("Application (client) ID (Enter alone skips Microsoft for now)", env.get("MS_CLIENT_ID", ""),
                                   check=lambda v: "" if guid.match(v) else "a GUID like 1b2c3d4e-...")
-        new["MS_CLIENT_SECRET"] = ask("Client secret Value", env.get("MS_CLIENT_SECRET", ""), hidden=True, allow_empty=False)
-        new["MS_TENANT"] = ask("Who may sign in: your Directory (tenant) ID for PUC accounts only, "
-                               "'organizations' or 'common'", env.get("MS_TENANT", ""), allow_empty=False,
-                               check=lambda v: "" if guid.match(v) or v in ("organizations", "common", "consumers")
-                               else "a tenant ID (GUID), organizations or common")
-    elif https:
-        new.update(MS_CLIENT_ID="", MS_CLIENT_SECRET="")
+        if new["MS_CLIENT_ID"]:
+            new["MS_CLIENT_SECRET"] = ask("Client secret Value", env.get("MS_CLIENT_SECRET", ""), hidden=True,
+                                          allow_empty=False)
+            new["MS_TENANT"] = ask("Who may sign in: your Directory (tenant) ID for PUC accounts only, "
+                                   "'organizations' or 'common'", env.get("MS_TENANT", ""), allow_empty=False,
+                                   check=lambda v: "" if guid.match(v) or v in ("organizations", "common", "consumers")
+                                   else "a tenant ID (GUID), organizations or common")
+        else:
+            print("   Microsoft sign-in skipped; run this again when you have the app registration.")
 
     if not env.get("APP_SECRET"):
         secret_file = HERE / ".secret"  # keep the key the app already made, so nobody is signed out
