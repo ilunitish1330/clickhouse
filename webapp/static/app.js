@@ -111,7 +111,7 @@
     const suggest = d.email.split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "").slice(0, 30);
     const days = Math.max(1, Math.round((d.expires_at * 1000 - Date.now()) / 864e5));
     box.innerHTML = `<form id="invite-form" autocomplete="on"><div class="eyebrow">Invitation</div><h2>Create your account</h2>
-      <p class="sub">You are invited as <span class="role-badge" style="--rc:${roleColor(d.role)}">${esc(d.role_title)}</span>${d.island && d.island !== "All islands" ? ` for <b>${esc(d.island)}</b>` : ""}.</p>
+      <p class="sub">You are invited as ${(d.roles || []).map((r) => `<span class="role-badge" style="--rc:${roleColor(r.id)}">${esc(r.title)}</span>`).join(" ")}${d.island && d.island !== "All islands" ? ` for <b>${esc(d.island)}</b>` : ""}.</p>
       <div class="invite-for">${icon("mail")}<div><b>${esc(d.email)}</b><small>This link works once · ${days} day${days > 1 ? "s" : ""} left</small></div></div>
       <div class="msg"></div>
       ${d.sso.length ? ssoButtons(d.sso, token) + `<p class="hint">Use the ${d.sso.map((p) => esc(p.title)).join(" or ")} account for <b>${esc(d.email)}</b>.</p>` + orLine("or choose a username and password") : ""}
@@ -1248,6 +1248,7 @@
       <div class="actions-row"><button class="btn" id="invite">${icon("mail")}Invite by e-mail</button><button class="btn primary" id="add">${icon("plus")}Add user</button></div></div><div id="u"></div>`;
     const [d, iv] = await Promise.all([api("/api/users"), api("/api/invites")]);
     const roleTitle = Object.fromEntries(d.roles.map((r) => [r.id, r.title]));
+    const badges = (ids) => `<div class="badges">${ids.map((r) => `<span class="role-badge" style="--rc:${roleColor(r)}">${esc(roleTitle[r] || r)}</span>`).join("")}</div>`;
     const island = Object.fromEntries(d.islands.map((i) => [i.code, i.name]));
     const status = (u) => !+u.active ? `<span class="dot-status off">Disabled</span>` : u.locked ? `<span class="dot-status bad">Locked (wrong passwords)</span>`
       : +u.must_change ? `<span class="dot-status warn">Must change password</span>` : `<span class="dot-status">Active</span>`;
@@ -1267,16 +1268,16 @@
         ${m.configured ? `<button class="btn small" id="mailtest">${icon("send")}Send a test e-mail</button>` : ""}</section>
       <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>People</h3><div class="meta">${d.users.length} accounts</div></div></div>
       <div class="tbl-wrap"><table class="data"><thead><tr><th>User</th><th>Role</th><th>Island</th><th>Sign-in</th><th>Status</th><th></th></tr></thead><tbody>
-      ${d.users.map((u) => `<tr><td><div class="user-cell"><span class="avatar" style="background:${roleColor(u.role)}">${esc(initials(u.full_name) || u.username[0].toUpperCase())}</span>
+      ${d.users.map((u) => `<tr><td><div class="user-cell"><span class="avatar" style="background:${roleColor((u.roles || [u.role])[0])}">${esc(initials(u.full_name) || u.username[0].toUpperCase())}</span>
           <div><b>${esc(u.full_name)}</b><small>${esc(u.username)}${u.email ? " · " + esc(u.email) : ""}</small></div></div></td>
-        <td><span class="role-badge" style="--rc:${roleColor(u.role)}">${esc(roleTitle[u.role] || u.role)}</span></td><td>${esc(island[u.region_code])}</td>
+        <td>${badges(u.roles || [u.role])}</td><td>${esc(island[u.region_code])}</td>
         <td><div class="chips-s">${signIn(u)}</div></td><td>${status(u)}</td>
         <td class="n"><button class="btn small" data-edit="${esc(u.username)}">${icon("edit")}Edit</button></td></tr>`).join("")}
       </tbody></table></div></section>
       <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>Invitations</h3><div class="meta">${open} waiting · links work once and expire after 7 days</div></div></div>
       ${iv.invites.length ? `<div class="tbl-wrap"><table class="data"><thead><tr><th>E-mail</th><th>Role</th><th>Island</th><th>Invited</th><th>Status</th><th></th></tr></thead><tbody>
       ${iv.invites.map((i) => `<tr><td><b>${esc(i.email)}</b>${i.full_name ? `<small class="muted-line">${esc(i.full_name)}</small>` : ""}</td>
-        <td><span class="role-badge" style="--rc:${roleColor(i.role)}">${esc(roleTitle[i.role] || i.role)}</span></td><td>${esc(island[i.region_code])}</td>
+        <td>${badges(i.role.split(","))}</td><td>${esc(island[i.region_code])}</td>
         <td>${when(i.created_at)}<small class="muted-line">by ${esc(i.created_by)}${i.sent ? " · e-mailed" : ""}</small></td>
         <td><span class="inv-status ${i.status}">${ISTAT[i.status] || i.status}</span>${i.status === "accepted" ? `<small class="muted-line">as ${esc(i.used_by)}</small>` : i.status === "pending" ? `<small class="muted-line">until ${when(i.expires_at)}</small>` : ""}</td>
         <td class="n">${i.status === "pending" || i.status === "expired" ? `<button class="btn small" data-resend="${i.id}" title="A new link; the old one stops working">${icon("send")}${i.status === "expired" ? "Send again" : "Resend"}</button>` : ""}
@@ -1343,9 +1344,12 @@
   }
 
   function userModal(u, d, done, mode = "create") {
-    // no role is picked in advance for a new person: a slip must not make an administrator
-    const roles = (u ? "" : `<option value="" disabled selected>Choose a role…</option>`) +
-      d.roles.map((r) => `<option value="${r.id}" ${u?.role === r.id ? "selected" : ""}>${esc(r.title)}</option>`).join("");
+    // one or more roles, as tick boxes; nothing is ticked in advance for a new person,
+    // so a slip cannot make an administrator
+    const has = u ? (u.roles || [u.role]) : [];
+    const roles = `<div class="span2 roles-field"><div class="roles-lbl">Roles <em>(one or more · the user gets everything any ticked role allows)</em></div>
+      <div class="role-pick">${d.roles.map((r) => `<label class="role-opt" style="--rc:${roleColor(r.id)}"><input type="checkbox" name="roles" value="${r.id}" ${has.includes(r.id) ? "checked" : ""}>
+        <span class="role-opt-body"><b>${esc(r.title)}</b><small>${esc(r.description)}</small></span></label>`).join("")}</div></div>`;
     const islands = d.islands.map((i) => `<option value="${i.code}" ${+u?.region_code === i.code ? "selected" : ""}>${esc(i.name)}</option>`).join("");
     const linked = u && (+u.google || +u.microsoft);
     const createForm = `<form id="uf" data-mode="create"><div class="uerr"></div>
@@ -1353,8 +1357,8 @@
       <label class="field"><span>Full name</span><input name="full_name" value="${esc(u?.full_name || "")}" required></label>
       <label class="field"><span>Username</span><input name="username" value="${esc(u?.username || "")}" ${u ? "readonly" : ""} required pattern="[A-Za-z0-9._\\-]{1,40}"></label>
       <label class="field span2"><span>E-mail <em>(optional · for sign-in by e-mail, Google / Microsoft and password resets)</em></span><input name="email" type="email" value="${esc(u?.email || "")}"></label>
-      <label class="field"><span>Role</span><select name="role" required>${roles}</select></label>
-      <label class="field"><span>Island</span><select name="region_code">${islands}</select></label>
+      ${roles}
+      <label class="field span2"><span>Island <em>(limits every role to this island's rows)</em></span><select name="region_code">${islands}</select></label>
       <label class="field span2"><span>${u ? "New password <em>(leave empty to keep it)</em>" : "Starting password"}</span><input name="password" type="password" minlength="8" ${u ? "" : "required"} autocomplete="new-password"></label>
       </div>
       <label class="check"><input type="checkbox" name="active" ${!u || +u.active ? "checked" : ""}> Account active</label>
@@ -1366,8 +1370,8 @@
       <div class="form-grid">
       <label class="field span2"><span>E-mail address</span><input name="email" type="email" required placeholder="name@gmail.com or name@company.com"></label>
       <label class="field span2"><span>Full name <em>(optional)</em></span><input name="full_name"></label>
-      <label class="field"><span>Role</span><select name="role" required>${roles}</select></label>
-      <label class="field"><span>Island</span><select name="region_code">${islands}</select></label>
+      ${roles}
+      <label class="field span2"><span>Island <em>(limits every role to this island's rows)</em></span><select name="region_code">${islands}</select></label>
       </div>
       <div class="actions"><button type="button" class="btn cancel">Cancel</button><button class="btn primary" type="submit">${icon("send")}Send invitation</button></div></form>`;
     modal(`<h2>${u ? "Edit " + esc(u.username) : "Add a user"}</h2>
@@ -1380,13 +1384,14 @@
         form.onsubmit = async (e) => {
           e.preventDefault(); const f = new FormData(form), btn = form.querySelector("button[type=submit]");
           const err = (msg) => { form.querySelector(".uerr").innerHTML = `<div class="error">${esc(msg)}</div>`; btn.disabled = false; };
+          if (!f.getAll("roles").length) return err("Tick at least one role.");
           btn.disabled = true;
           try {
             if (form.dataset.mode === "invite") {
-              const r = await api("/api/invites", { method: "POST", body: JSON.stringify({ email: f.get("email"), full_name: f.get("full_name"), role: f.get("role"), region_code: +f.get("region_code") }) });
+              const r = await api("/api/invites", { method: "POST", body: JSON.stringify({ email: f.get("email"), full_name: f.get("full_name"), roles: f.getAll("roles"), region_code: +f.get("region_code") }) });
               close(); inviteSent(r, done); return;
             }
-            await api("/api/users", { method: "POST", body: JSON.stringify({ new: !u, username: f.get("username"), full_name: f.get("full_name"), email: f.get("email"), role: f.get("role"), region_code: +f.get("region_code"), password: f.get("password") || null, active: !!f.get("active"), unlink: !!f.get("unlink") }) });
+            await api("/api/users", { method: "POST", body: JSON.stringify({ new: !u, username: f.get("username"), full_name: f.get("full_name"), email: f.get("email"), roles: f.getAll("roles"), region_code: +f.get("region_code"), password: f.get("password") || null, active: !!f.get("active"), unlink: !!f.get("unlink") }) });
             close(); done();
           } catch (x) { err(x.message); }
         };

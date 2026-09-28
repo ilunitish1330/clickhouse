@@ -182,6 +182,54 @@ def main() -> None:
     ok(signed_in(jane) == "jane.doe", "this session goes on")
     ok(signed_in(other) is None, "the other session ended")
 
+    # ---- several roles per user ------------------------------------------------------------------
+    def make(username, roles, region=0):
+        r = admin.post("/api/users", json={"new": True, "username": username, "full_name": username.title(),
+                                            "email": "", "roles": roles, "region_code": region,
+                                            "password": "Multi-pass-1", "active": True})
+        ok(r.status_code == 200, r.text)
+        c = client()
+        ok(c.post("/api/login", json={"username": username, "password": "Multi-pass-1"}).status_code == 200, username)
+        return c, c.get("/api/me").json()
+    c, me = make("elec.reviewer", ["electricity_manager", "reviewer"])
+    ok(me["roles"] == ["electricity_manager", "reviewer"], me["roles"])
+    ok(me["role_title"] == "Electricity Division Manager + Data Reviewer", me["role_title"])
+    pages = [p["id"] for p in me["pages"]]
+    ok("solar" in pages and "water" in pages and me["can_review"] and not me["can_admin"], pages)
+    ok(c.get("/api/review/batches").status_code == 200, "the reviewer part works")
+    ok(c.get("/api/users").status_code == 403, "neither role is an admin")
+    c, me = make("utility.pair", ["electricity_manager", "water_manager"])
+    ok([u["code"] for u in me["filters"]["utilities"]] == [1, 2, 3], me["filters"]["utilities"])
+    ok(not me["can_review"] and "review" not in [p["id"] for p in me["pages"]], "no review from either role")
+    c, me = make("ops.billing", ["data_operator", "billing_officer"], region=3)
+    ok(me["can_run"] and me["island"] == "La Digue" and [p["id"] for p in me["pages"]] == ["customers", "controls", "consumption"], me)
+    listed = next(u for u in admin.get("/api/users").json()["users"] if u["username"] == "utility.pair")
+    ok(listed["roles"] == ["electricity_manager", "water_manager"], listed)
+    for roles, msg in [([], "at least one role"), (["finance", "king"], "Unknown role"),
+                       (["finance", "regional_manager"], "island")]:
+        r = admin.post("/api/users", json={"new": True, "username": "bad.roles", "full_name": "B", "roles": roles,
+                                            "region_code": 0, "password": "Multi-pass-1", "active": True})
+        ok(r.status_code == 400 and msg.lower() in r.text.lower(), (roles, r.text))
+    # an administrator keeps the admin role on their own account, with or without others
+    me_row = next(u for u in admin.get("/api/users").json()["users"] if u["username"] == "admin")
+    r = admin.post("/api/users", json={**me_row, "password": None, "active": True, "roles": ["finance"]})
+    ok(r.status_code == 400 and "demote" in r.text, r.text)
+    r = admin.post("/api/users", json={**me_row, "password": None, "active": True, "roles": ["admin", "reviewer"]})
+    ok(r.status_code == 200 and admin.get("/api/me").json()["can_admin"], r.text)
+    # an invitation with two roles
+    inv = admin.post("/api/invites", json={"email": "two.roles@x.test", "roles": ["auditor", "reviewer"],
+                                            "region_code": 0}).json()
+    tok = inv["link"].rsplit("/", 1)[1]
+    d = client().get(f"/api/invite/{tok}").json()
+    ok([r["id"] for r in d["roles"]] == ["auditor", "reviewer"], d)
+    ok("Internal Auditor + Data Reviewer" in [m for m in OUTBOX if m["To"] == "two.roles@x.test"][-1]
+       .get_body(("plain",)).get_content(), "both roles in the e-mail")
+    c = client()
+    ok(c.post(f"/api/invite/{tok}/accept", json={"username": "two.roles", "full_name": "Two Roles",
+                                                 "password": "Two-pass-11"}).status_code == 200, "accept")
+    me = c.get("/api/me").json()
+    ok(me["roles"] == ["auditor", "reviewer"] and me["can_review"] and me["can_load"], me)
+
     # ---- lockout ------------------------------------------------------------------------------
     anon = client()
     for i in range(5):

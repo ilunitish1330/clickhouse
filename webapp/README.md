@@ -36,6 +36,11 @@ Every user also has an **island**. Any role can be limited to Mahe, Praslin or L
 filters every number the user sees. The limits are applied inside the database queries on the
 server, not in the browser. `test_webapp.py` checks them.
 
+A user can have **one or more roles**: tick them in **Add user**, **Edit** or **Invite by e-mail**.
+The user then gets everything any of their roles allows: every page, every utility and every right
+(loading data, reviewing, administration). A Finance Manager who is also a Data Reviewer sees the
+finance dashboards and Data Review. The island still limits all of it.
+
 Roles are defined in `roles.py`. To add a role, add an entry there, then assign users to it on the
 **Users & roles** page.
 

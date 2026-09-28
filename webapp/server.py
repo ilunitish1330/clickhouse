@@ -42,7 +42,7 @@ import review  # noqa: E402
 import bulk  # noqa: E402
 import formula  # noqa: E402
 import auth  # noqa: E402
-from roles import ISLANDS, ROLES, SEED_USERS  # noqa: E402
+from roles import ISLANDS, ROLES, SEED_USERS, combine, role_ids  # noqa: E402
 
 ch = ax_load.ch
 APP_DB = os.environ.get("APP_DB", "puc_app")  # users, audit, load timings
@@ -105,7 +105,8 @@ def init_store() -> None:
         print(f"created {len(SEED_USERS)} users (one per role), password '{pw}' -- change them")
     # roles added after the first start get their default user once, if nobody has the role yet
     for username, name, role, region in SEED_USERS:
-        if role in NEW_ROLES and q(f"SELECT count() AS n FROM {APP_DB}.users FINAL WHERE role = {esc(role)}")[0]["n"] in (0, "0") \
+        if role in NEW_ROLES and q(f"SELECT count() AS n FROM {APP_DB}.users FINAL "
+                                   f"WHERE has(splitByChar(',', role), {esc(role)})")[0]["n"] in (0, "0") \
                 and not get_user(username):
             pw = os.environ.get("APP_DEFAULT_PASSWORD", "Puc@2026")
             save_user(username, name, role, region, password=pw, must_change=1)
@@ -181,21 +182,31 @@ def current_user(request: Request) -> dict:
     except Exception:
         raise HTTPException(401, "Please sign in")
     user = get_user(username)
-    if not user or str(user["active"]) != "1" or user["role"] not in ROLES:
+    if not user or str(user["active"]) != "1" or not valid_roles(user["role"]):
         raise HTTPException(401, "Account disabled")
     if not hmac.compare_digest(mark, pw_mark(user)):
         raise HTTPException(401, "Your password was changed. Please sign in again.")
     return user
 
 
+def valid_roles(value) -> bool:
+    ids = role_ids(value)
+    return bool(ids) and all(r in ROLES for r in ids)
+
+
+def urole(user: dict):
+    """The user's access: their one role, or all of their roles together."""
+    return combine(user["role"])
+
+
 def scope_of(user: dict) -> dict:
-    role = ROLES[user["role"]]
+    role = urole(user)
     return {"utilities": list(role.utilities or (1, 2, 3)), "region": int(user["region_code"]) or None,
             "see_accounts": role.see_accounts}
 
 
 def need(user: dict, page: str) -> None:
-    if page not in ROLES[user["role"]].pages:
+    if page not in urole(user).pages:
         raise HTTPException(403, "Your role does not include this page")
 
 
@@ -263,7 +274,8 @@ def link_base(request: Request) -> str:
 
 def invite_public(row: dict) -> dict:
     return {"email": row["email"], "full_name": row["full_name"], "role": row["role"],
-            "role_title": ROLES[row["role"]].title if row["role"] in ROLES else row["role"],
+            "roles": [{"id": r, "title": ROLES[r].title} for r in role_ids(row["role"]) if r in ROLES],
+            "role_title": combine(row["role"]).title if valid_roles(row["role"]) else row["role"],
             "island": ISLANDS.get(row["region_code"], ""), "expires_at": row["expires_at"],
             "sso": [{"id": k, "title": p["title"]} for k, p in auth.sso_ready().items()]}
 
@@ -274,7 +286,7 @@ def send_invite(row: dict, token: str, admin: dict, request: Request) -> dict:
     sent, error = False, ""
     if auth.mail_configured():
         try:
-            auth.send_mail(row["email"], *auth.invite_mail(row["email"], row["full_name"], ROLES[row["role"]].title,
+            auth.send_mail(row["email"], *auth.invite_mail(row["email"], row["full_name"], combine(row["role"]).title,
                                                            ISLANDS.get(row["region_code"], ""), admin["full_name"], link))
             sent = True
         except (RuntimeError, ValueError) as e:
@@ -286,15 +298,25 @@ def send_invite(row: dict, token: str, admin: dict, request: Request) -> dict:
     return {"ok": True, "link": link, "sent": sent, "error": error, "email": row["email"]}
 
 
-def check_new_person(email: str, role: str, region: int) -> None:
-    if not auth.valid_email(email):
-        raise HTTPException(400, "Enter a valid e-mail address")
-    if role not in ROLES:
+def check_roles(b: dict) -> tuple[str, int]:
+    """The roles ("roles": [...], or one "role") and island from a form, checked; roles as stored."""
+    ids = role_ids(b.get("roles") if b.get("roles") is not None else b.get("role"))
+    if not ids:
+        raise HTTPException(400, "Choose at least one role")
+    if not all(r in ROLES for r in ids):
         raise HTTPException(400, "Unknown role")
+    region = int(b.get("region_code") or 0)
     if region not in ISLANDS:
         raise HTTPException(400, "Unknown island")
-    if role == "regional_manager" and not region:
+    if "regional_manager" in ids and not region:
         raise HTTPException(400, "A regional manager needs an island")
+    return ",".join(ids), region
+
+
+def check_new_person(email: str, b: dict) -> tuple[str, int]:
+    if not auth.valid_email(email):
+        raise HTTPException(400, "Enter a valid e-mail address")
+    return check_roles(b)
 
 
 @app.get("/api/invites")
@@ -308,8 +330,7 @@ async def invite_create(request: Request):
     admin = need_admin(request)
     b = await request.json()
     email = str(b.get("email", "")).strip().lower()
-    role, region = b.get("role"), int(b.get("region_code") or 0)
-    check_new_person(email, role, region)
+    role, region = check_new_person(email, b)
     if find_user("email", email):
         raise HTTPException(400, "A user with this e-mail address already exists")
     for old in auth.invites():  # one open invitation per address: a new one replaces it
@@ -514,7 +535,7 @@ def oidc_callback(provider: str, request: Request, code: str = "", state: str = 
         audit(who["email"] or who["sub"], "login_failed", provider)
         return back_to_app(f"No PUC Analytics account uses this {title} account. Ask your administrator "
                            "for an invitation.")
-    if str(user["active"]) != "1" or user["role"] not in ROLES:
+    if str(user["active"]) != "1" or not valid_roles(user["role"]):
         return back_to_app("Your account is disabled")
     r = back_to_app()
     r.set_cookie(COOKIE, make_token(user), httponly=True, samesite="lax", max_age=SESSION_HOURS * 3600,
@@ -526,7 +547,7 @@ def oidc_callback(provider: str, request: Request, code: str = "", state: str = 
 @app.get("/api/me")
 def me(request: Request):
     user = current_user(request)
-    role = ROLES[user["role"]]
+    role = urole(user)
     scope = scope_of(user)
     names = {1: "Electricity", 2: "Sewerage", 3: "Water"}
     pages = [{"id": p, "title": dashboards.PAGES[p]["title"], "icon": dashboards.PAGES[p]["icon"],
@@ -535,7 +556,8 @@ def me(request: Request):
              (dashboards.PAGES[p]["utility"] is None or dashboards.PAGES[p]["utility"] in scope["utilities"])]
     return {
         "username": user["username"], "full_name": user["full_name"], "role": user["role"],
-        "role_title": role.title, "role_description": role.description, "email": user["email"],
+        "roles": role_ids(user["role"]), "role_title": role.title, "role_description": role.description,
+        "email": user["email"],
         "has_password": bool(user["pw_hash"]),
         "island": ISLANDS[int(user["region_code"])], "must_change": str(user["must_change"]) == "1",
         "pages": pages, "can_load": role.can_load or "load_history" in role.pages, "can_run": role.can_load,
@@ -643,7 +665,7 @@ def start_job(user: dict, label: str, args: list[str], kind: str = "load", size:
 @app.post("/api/load")
 async def load(request: Request, file: UploadFile = File(...)):
     user = current_user(request)
-    if not ROLES[user["role"]].can_load:
+    if not urole(user).can_load:
         raise HTTPException(403, "Your role cannot load data")
     name = Path(file.filename or "upload").name
     if not name.lower().endswith((".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".zip")):
@@ -658,7 +680,7 @@ async def load(request: Request, file: UploadFile = File(...)):
 @app.post("/api/rebuild")
 def rebuild(request: Request):
     user = current_user(request)
-    if not ROLES[user["role"]].can_load:
+    if not urole(user).can_load:
         raise HTTPException(403, "Your role cannot run the pipeline")
     return start_job(user, "Rebuild aggregates", ["--rebuild"], "rebuild")
 
@@ -678,7 +700,7 @@ def job(job_id: str, request: Request):
 
 def reviewer(request: Request) -> dict:
     user = current_user(request)
-    if not ROLES[user["role"]].can_review:
+    if not urole(user).can_review:
         raise HTTPException(403, "Your role cannot review data")
     return user
 
@@ -841,7 +863,7 @@ def review_reviewed(batch_id: str, request: Request):
 @app.get("/api/loads")
 def loads(request: Request):
     user = current_user(request)
-    role = ROLES[user["role"]]
+    role = urole(user)
     if not (role.can_load or "load_history" in role.pages):
         raise HTTPException(403, "Your role cannot see loads")
     try:
@@ -862,7 +884,7 @@ def loads(request: Request):
 
 def need_admin(request: Request) -> dict:
     user = current_user(request)
-    if not ROLES[user["role"]].can_admin:
+    if not urole(user).can_admin:
         raise HTTPException(403, "Administrators only")
     return user
 
@@ -875,6 +897,7 @@ def users(request: Request):
              f"toString(updated_at) AS updated FROM {APP_DB}.users FINAL ORDER BY username")
     for r in rows:
         r["locked"] = auth.locked_for(r["username"]) > 0
+        r["roles"] = role_ids(r["role"])
     return {"users": rows,
             "mail": {"configured": auth.mail_configured(), "base_url": auth.base_url(),
                      "from": os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER", ""),
@@ -894,13 +917,7 @@ async def upsert_user(request: Request):
     email = str(b.get("email") or "").strip().lower()
     if email and not auth.valid_email(email):
         raise HTTPException(400, "Enter a valid e-mail address, or leave it empty")
-    if b.get("role") not in ROLES:
-        raise HTTPException(400, "Unknown role")
-    region = int(b.get("region_code") or 0)
-    if region not in ISLANDS:
-        raise HTTPException(400, "Unknown island")
-    if b.get("role") == "regional_manager" and not region:
-        raise HTTPException(400, "A regional manager needs an island")
+    role, region = check_roles(b)
     existing = get_user(username)
     if b.get("new") and existing:
         raise HTTPException(400, "This username is taken. Choose another one.")
@@ -912,9 +929,9 @@ async def upsert_user(request: Request):
         raise HTTPException(400, "A new user needs a password")
     if password and len(password) < 8:
         raise HTTPException(400, "Passwords need at least 8 characters")
-    if existing and username == admin["username"] and (not b.get("active", True) or b["role"] != "admin"):
+    if existing and username == admin["username"] and (not b.get("active", True) or "admin" not in role_ids(role)):
         raise HTTPException(400, "You cannot demote or disable your own account")
-    save_user(username, str(b.get("full_name") or username), b["role"], region, password=password,
+    save_user(username, str(b.get("full_name") or username), role, region, password=password,
               must_change=1 if password else int(existing["must_change"]) if existing else 1,
               active=1 if b.get("active", True) else 0, keep=existing, email=email,
               created_by=None if existing else admin["username"],

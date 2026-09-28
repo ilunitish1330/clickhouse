@@ -61,6 +61,36 @@ ROLES = {
                           ["load"], can_load=True),
 }
 
+
+def role_ids(value) -> list[str]:
+    """A user's roles: stored as "finance,reviewer" (one or more), given as a list or that text."""
+    items = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+    out = []
+    for r in items:
+        r = str(r).strip()
+        if r and r not in out:
+            out.append(r)
+    return out
+
+
+def combine(ids) -> Role:
+    """The access of several roles together: every page, utility and right any of them gives.
+    Pages keep the menu order; the island limit is the user's, not the role's."""
+    roles = [ROLES[r] for r in role_ids(ids)]
+    if len(roles) == 1:
+        return roles[0]
+    pages = []
+    for r in roles:
+        pages += [p for p in r.pages if p not in pages]
+    order = {p: i for i, p in enumerate(DASHBOARDS + ["load", "load_history", "review", "users"])}
+    pages.sort(key=lambda p: order.get(p, 99))
+    utilities = None if any(r.utilities is None for r in roles) else \
+        tuple(sorted({u for r in roles for u in r.utilities}))
+    return Role(" + ".join(r.title for r in roles), " ".join(r.description for r in roles), pages, utilities,
+                any(r.see_accounts for r in roles), any(r.can_load for r in roles), any(r.can_admin for r in roles),
+                any(r.can_review for r in roles))
+
+
 # First start creates one user per role; every password must be changed.
 SEED_USERS = [
     ("admin", "System Administrator", "admin", 0),
