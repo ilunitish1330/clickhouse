@@ -308,9 +308,16 @@ def providers() -> dict[str, dict]:
     return out
 
 
+def sso_address_ok() -> bool:
+    """Google and Microsoft only send people back to an https:// address (or http://localhost)."""
+    from urllib.parse import urlparse
+    u = urlparse(base_url())
+    return u.scheme == "https" or (u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1"))
+
+
 def sso_ready() -> dict[str, dict]:
-    """Providers that can be used: they need APP_BASE_URL for the redirect address."""
-    return providers() if base_url() else {}
+    """Providers that can be used: they need an https:// APP_BASE_URL for the redirect address."""
+    return providers() if sso_address_ok() else {}
 
 
 def redirect_uri(provider: str) -> str:

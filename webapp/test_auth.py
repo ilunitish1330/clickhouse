@@ -370,6 +370,11 @@ def main() -> None:
     # without APP_BASE_URL there is no Google / Microsoft (they need the fixed return address)
     saved = os.environ.pop("APP_BASE_URL")
     ok(client().get("/api/auth/config").json()["sso"] == [], "no SSO without APP_BASE_URL")
+    # ... nor on a plain http:// address, which they refuse (http://localhost is allowed)
+    os.environ["APP_BASE_URL"] = "http://192.168.11.71:8020"
+    ok(client().get("/api/auth/config").json()["sso"] == [], "no SSO on http://")
+    os.environ["APP_BASE_URL"] = "http://localhost:8020"
+    ok(len(client().get("/api/auth/config").json()["sso"]) == 2, "SSO on http://localhost")
     os.environ["APP_BASE_URL"] = saved
 
     # the audit trail

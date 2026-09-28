@@ -268,7 +268,16 @@ def checks(test_to: str = "") -> bool:
 
     print("\nChecks")
     base = auth.base_url()
-    line(bool(base) or None, f"APP_BASE_URL {base}" if base else "APP_BASE_URL not set: no Forgot password, no Google / Microsoft")
+    if base:
+        host = urlparse(base).hostname
+        try:
+            socket.getaddrinfo(host, None)
+            line(True, f"APP_BASE_URL {base}")
+        except socket.gaierror:
+            line(False, f"APP_BASE_URL {base}: the name {host} does not exist (no DNS record), so e-mailed links "
+                        "would not open. Use an address that opens this app, e.g. http://<server-ip>:8020")
+    else:
+        line(None, "APP_BASE_URL not set: no Forgot password, no Google / Microsoft")
     if auth.mail_configured():
         to = test_to or os.environ.get("SMTP_USER") or os.environ.get("SMTP_FROM", "")
         try:
@@ -283,11 +292,9 @@ def checks(test_to: str = "") -> bool:
         line(None, "e-mail not set up: the administrator copies invitation links by hand")
     for key, p in auth.providers().items():
         if key not in auth.sso_ready():
-            line(False, f"{p['title']}: keys are set but APP_BASE_URL is missing")
+            line(None, f"{p['title']}: keys saved, but off until APP_BASE_URL is an https:// address")
             continue
         line(*client_check(key, p))
-        if not base.startswith("https://") and urlparse(base).hostname != "localhost":
-            line(False, f"{p['title']}: needs an https:// APP_BASE_URL")
     if not auth.providers():
         line(None, "Google / Microsoft sign-in not set up")
     print("\n" + ("All set. Restart the web app to use the new settings." if good else
