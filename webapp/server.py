@@ -33,7 +33,7 @@ sys.path[:0] = [str(REPO), str(HERE)]
 
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile  # noqa: E402
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import ax_load  # noqa: E402  (.env, ch())
@@ -41,6 +41,7 @@ import dashboards  # noqa: E402
 import review  # noqa: E402
 import bulk  # noqa: E402
 import formula  # noqa: E402
+import auth  # noqa: E402
 from roles import ISLANDS, ROLES, SEED_USERS  # noqa: E402
 
 ch = ax_load.ch
@@ -48,6 +49,7 @@ APP_DB = os.environ.get("APP_DB", "puc_app")  # users, audit, load timings
 UPLOADS = REPO / "data" / "uploads"
 SESSION_HOURS = 10
 COOKIE = "puc_session"
+FLOW_COOKIE = "puc_sso"  # the few minutes between "Continue with Google" and coming back
 
 
 # =============================================================================
@@ -89,6 +91,7 @@ def init_store() -> None:
             salt String, pw_hash String, must_change UInt8, active UInt8,
             updated_at DateTime64(3) DEFAULT now64(3))
           ENGINE = ReplacingMergeTree(updated_at) ORDER BY username""")
+    auth.init_store()  # e-mail and Google / Microsoft columns, invitation and reset links
     ch(f"""CREATE TABLE IF NOT EXISTS {APP_DB}.load_timings (
             ts DateTime DEFAULT now(), kind LowCardinality(String), bytes UInt64, seconds Float32)
           ENGINE = MergeTree ORDER BY ts""")
@@ -114,13 +117,32 @@ def get_user(username: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def save_user(username, full_name, role, region, *, password=None, must_change=0, active=1, keep=None):
-    salt, pw_hash = (keep["salt"], keep["pw_hash"]) if keep and password is None else (secrets.token_hex(8), None)
+def find_user(field: str, value: str) -> dict | None:
+    """The user whose email / google_sub / microsoft_sub is this (never matches empty)."""
+    assert field in ("email", "google_sub", "microsoft_sub")
+    if not value:
+        return None
+    rows = q(f"SELECT * FROM {APP_DB}.users FINAL WHERE {field} = {esc(value)} ORDER BY username LIMIT 1")
+    return rows[0] if rows else None
+
+
+LINKS = ("email", "google_sub", "microsoft_sub", "created_by")
+
+
+def save_user(username, full_name, role, region, *, password=None, must_change=0, active=1, keep=None, **links):
+    """One row per user; what is not given is kept from `keep` (the current row). A user
+    made without a password (Google / Microsoft only) has an empty hash, which no password matches."""
+    salt, pw_hash = (keep["salt"], keep["pw_hash"]) if keep and password is None else (secrets.token_hex(8), "")
     if password is not None:
         pw_hash = hash_pw(password, salt)
-    ch(f"INSERT INTO {APP_DB}.users (username, full_name, role, region_code, salt, pw_hash, must_change, active) "
-       f"VALUES ({esc(username)}, {esc(full_name)}, {esc(role)}, {int(region)}, {esc(salt)}, {esc(pw_hash)}, "
-       f"{int(must_change)}, {int(active)})")
+    vals = {k: links[k] if links.get(k) is not None else (keep or {}).get(k, "") for k in LINKS}
+    ch(f"INSERT INTO {APP_DB}.users (username, full_name, role, region_code, salt, pw_hash, must_change, active, "
+       f"{', '.join(LINKS)}) VALUES ({esc(username)}, {esc(full_name)}, {esc(role)}, {int(region)}, {esc(salt)}, "
+       f"{esc(pw_hash)}, {int(must_change)}, {int(active)}, {', '.join(esc(vals[k]) for k in LINKS)})")
+
+
+def password_ok(user: dict, password: str) -> bool:
+    return bool(user["pw_hash"]) and hmac.compare_digest(hash_pw(password, user["salt"]), user["pw_hash"])
 
 
 def audit(username: str, action: str, detail: str = "") -> None:
@@ -130,18 +152,30 @@ def audit(username: str, action: str, detail: str = "") -> None:
         pass
 
 
-def make_token(username: str) -> str:
+def pw_mark(user: dict) -> str:
+    """Changes whenever the password does: sessions made before a password change stop working."""
+    return hashlib.sha256((user["salt"] + user["pw_hash"]).encode()).hexdigest()[:12]
+
+
+def make_token(user: dict) -> str:
     exp = int(time.time()) + SESSION_HOURS * 3600
-    body = f"{username}|{exp}"
+    body = f"{user['username']}|{pw_mark(user)}|{exp}"
     sig = hmac.new(SECRET, body.encode(), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{body}|{sig}".encode()).decode()
+
+
+def sign_in(response: Response, user: dict, how: str) -> None:
+    response.set_cookie(COOKIE, make_token(user), httponly=True, samesite="lax", max_age=SESSION_HOURS * 3600,
+                        secure=auth.base_url().startswith("https://"))
+    audit(user["username"], "login", how)
 
 
 def current_user(request: Request) -> dict:
     tok = request.cookies.get(COOKIE)
     try:
-        username, exp, sig = base64.urlsafe_b64decode(tok.encode()).decode().rsplit("|", 2)
-        good = hmac.compare_digest(sig, hmac.new(SECRET, f"{username}|{exp}".encode(), hashlib.sha256).hexdigest())
+        username, mark, exp, sig = base64.urlsafe_b64decode(tok.encode()).decode().rsplit("|", 3)
+        good = hmac.compare_digest(sig, hmac.new(SECRET, f"{username}|{mark}|{exp}".encode(),
+                                                 hashlib.sha256).hexdigest())
         if not good or int(exp) < time.time():
             raise ValueError
     except Exception:
@@ -149,6 +183,8 @@ def current_user(request: Request) -> dict:
     user = get_user(username)
     if not user or str(user["active"]) != "1" or user["role"] not in ROLES:
         raise HTTPException(401, "Account disabled")
+    if not hmac.compare_digest(mark, pw_mark(user)):
+        raise HTTPException(401, "Your password was changed. Please sign in again.")
     return user
 
 
@@ -186,14 +222,21 @@ def startup() -> None:
 @app.post("/api/login")
 async def login(request: Request, response: Response):
     body = await request.json()
-    user = get_user(str(body.get("username", "")).strip().lower())
+    name = str(body.get("username", "")).strip().lower()[:254]  # a username or an e-mail address
+    user = find_user("email", name) if "@" in name else get_user(name)
+    key = user["username"] if user else name
+    wait = auth.locked_for(key)
+    if wait:
+        audit(key, "login_locked")
+        raise HTTPException(429, f"Too many wrong passwords. Try again in {(wait + 59) // 60} minutes, "
+                                 "or use \"Forgot password\".")
     time.sleep(0.2)  # blunt password guessing a little
-    if not user or str(user["active"]) != "1" or hash_pw(str(body.get("password", "")), user["salt"]) != user["pw_hash"]:
-        audit(str(body.get("username", "")), "login_failed")
+    if not user or str(user["active"]) != "1" or not password_ok(user, str(body.get("password", ""))):
+        auth.failed(key)
+        audit(key, "login_failed")
         raise HTTPException(401, "Wrong username or password")
-    response.set_cookie(COOKIE, make_token(user["username"]), httponly=True, samesite="lax",
-                        max_age=SESSION_HOURS * 3600)
-    audit(user["username"], "login")
+    auth.clear_fails(key)
+    sign_in(response, user, "password")
     return {"ok": True}
 
 
@@ -201,6 +244,283 @@ async def login(request: Request, response: Response):
 def logout(response: Response):
     response.delete_cookie(COOKIE)
     return {"ok": True}
+
+
+# --- sign-in options, invitations, password reset, Google / Microsoft ---------------
+
+@app.get("/api/auth/config")
+def auth_config():
+    """What the sign-in page may offer (no session needed)."""
+    return {"sso": [{"id": k, "title": p["title"]} for k, p in auth.sso_ready().items()],
+            "forgot": auth.mail_configured() and bool(auth.base_url())}
+
+
+def link_base(request: Request) -> str:
+    # an administrator's own request may supply the address when APP_BASE_URL is not set;
+    # password resets (asked for by anyone) never do -- see auth_forgot
+    return auth.base_url() or str(request.base_url).rstrip("/")
+
+
+def invite_public(row: dict) -> dict:
+    return {"email": row["email"], "full_name": row["full_name"], "role": row["role"],
+            "role_title": ROLES[row["role"]].title if row["role"] in ROLES else row["role"],
+            "island": ISLANDS.get(row["region_code"], ""), "expires_at": row["expires_at"],
+            "sso": [{"id": k, "title": p["title"]} for k, p in auth.sso_ready().items()]}
+
+
+def send_invite(row: dict, token: str, admin: dict, request: Request) -> dict:
+    """E-mails the link when e-mail is set up; the administrator always gets the link too."""
+    link = f"{link_base(request)}/#/invite/{token}"
+    sent, error = False, ""
+    if auth.mail_configured():
+        try:
+            auth.send_mail(row["email"], *auth.invite_mail(row["email"], row["full_name"], ROLES[row["role"]].title,
+                                                           ISLANDS.get(row["region_code"], ""), admin["full_name"], link))
+            sent = True
+        except (RuntimeError, ValueError) as e:
+            error = str(e)
+    else:
+        error = "E-mail is not set up, so copy the link and send it yourself."
+    if sent:
+        auth.put_token({**row, "sent": 1})
+    return {"ok": True, "link": link, "sent": sent, "error": error, "email": row["email"]}
+
+
+def check_new_person(email: str, role: str, region: int) -> None:
+    if not auth.valid_email(email):
+        raise HTTPException(400, "Enter a valid e-mail address")
+    if role not in ROLES:
+        raise HTTPException(400, "Unknown role")
+    if region not in ISLANDS:
+        raise HTTPException(400, "Unknown island")
+    if role == "regional_manager" and not region:
+        raise HTTPException(400, "A regional manager needs an island")
+
+
+@app.get("/api/invites")
+def invites_list(request: Request):
+    need_admin(request)
+    return {"invites": auth.invites()}
+
+
+@app.post("/api/invites")
+async def invite_create(request: Request):
+    admin = need_admin(request)
+    b = await request.json()
+    email = str(b.get("email", "")).strip().lower()
+    role, region = b.get("role"), int(b.get("region_code") or 0)
+    check_new_person(email, role, region)
+    if find_user("email", email):
+        raise HTTPException(400, "A user with this e-mail address already exists")
+    for old in auth.invites():  # one open invitation per address: a new one replaces it
+        if old["email"] == email and old["status"] == "pending":
+            auth.close_token(auth.invite_by_id(old["id"]), "revoked", admin["username"])
+    token, row = auth.new_token("invite", email=email, full_name=str(b.get("full_name") or "").strip()[:100],
+                                role=role, region=region, by=admin["username"], minutes=auth.INVITE_DAYS * 1440)
+    audit(admin["username"], "invite_sent", f"{email} as {role}")
+    return send_invite(row, token, admin, request)
+
+
+@app.post("/api/invites/{invite_id}/resend")
+def invite_resend(invite_id: str, request: Request):
+    """A new link (the old one stops working) and a fresh expiry."""
+    admin = need_admin(request)
+    row = auth.invite_by_id(invite_id)
+    if not row or row["status"] not in ("pending", "expired"):
+        raise HTTPException(400, "Only open or expired invitations can be sent again")
+    if find_user("email", row["email"]):
+        raise HTTPException(400, "A user with this e-mail address already exists")
+    token, row = auth.new_token("invite", email=row["email"], full_name=row["full_name"], role=row["role"],
+                                region=row["region_code"], by=admin["username"], minutes=auth.INVITE_DAYS * 1440,
+                                id_=row["id"], created_at=row["created_at"])
+    audit(admin["username"], "invite_resent", row["email"])
+    return send_invite(row, token, admin, request)
+
+
+@app.post("/api/invites/{invite_id}/revoke")
+def invite_revoke(invite_id: str, request: Request):
+    admin = need_admin(request)
+    row = auth.invite_by_id(invite_id)
+    if not row or row["status"] != "pending":
+        raise HTTPException(400, "Only open invitations can be withdrawn")
+    auth.close_token(row, "revoked", admin["username"])
+    audit(admin["username"], "invite_revoked", row["email"])
+    return {"ok": True}
+
+
+@app.get("/api/invite/{token}")
+def invite_get(token: str):
+    row = auth.find_token("invite", token)
+    if not row:
+        raise HTTPException(404, "This invitation link is not valid any more. It may have been used, withdrawn "
+                                 "or expired -- ask your administrator for a new one.")
+    return invite_public(row)
+
+
+def free_username(email: str) -> str:
+    base = "".join(c for c in email.split("@")[0].lower() if c.isalnum() or c in "._-")[:30] or "user"
+    name, n = base, 1
+    while get_user(name):
+        n += 1
+        name = f"{base}{n}"
+    return name
+
+
+def accept_invite(row: dict, username: str, full_name: str, *, password=None, **links) -> dict:
+    """Makes the invited account. Caller holds auth.ACCEPT_LOCK and has re-read the row."""
+    if find_user("email", row["email"]):
+        raise HTTPException(400, "An account with this e-mail address already exists. Sign in instead.")
+    save_user(username, full_name, row["role"], row["region_code"], password=password, must_change=0, active=1,
+              email=row["email"], created_by=row["created_by"], **links)
+    auth.close_token(row, "accepted", username)
+    audit(username, "invite_accepted", f"{row['email']} invited by {row['created_by']}")
+    return get_user(username)
+
+
+@app.post("/api/invite/{token}/accept")
+async def invite_accept(token: str, request: Request, response: Response):
+    b = await request.json()
+    username = str(b.get("username", "")).strip().lower()
+    full_name = str(b.get("full_name", "")).strip()[:100]
+    password = str(b.get("password", ""))
+    if not username or len(username) > 40 or not all(c.isalnum() or c in "._-" for c in username):
+        raise HTTPException(400, "Username: letters, digits, dot, dash or underscore (up to 40)")
+    if not full_name:
+        raise HTTPException(400, "Enter your full name")
+    if len(password) < 8:
+        raise HTTPException(400, "Passwords need at least 8 characters")
+    with auth.ACCEPT_LOCK:
+        row = auth.find_token("invite", token)
+        if not row:
+            raise HTTPException(404, "This invitation link is not valid any more")
+        if get_user(username):
+            raise HTTPException(400, "This username is taken. Choose another one.")
+        user = accept_invite(row, username, full_name, password=password)
+    sign_in(response, user, "invitation")
+    return {"ok": True, "username": username}
+
+
+@app.post("/api/auth/forgot")
+async def auth_forgot(request: Request):
+    """Always the same answer, so the form does not tell who has an account."""
+    b = await request.json()
+    name = str(b.get("username", "")).strip().lower()[:254]
+    answer = {"ok": True, "message": "If that account has an e-mail address, a reset link is on its way. "
+                                      f"It works for {auth.RESET_MINUTES} minutes."}
+    if not (auth.mail_configured() and auth.base_url()):
+        raise HTTPException(400, "Password reset by e-mail is not set up. Ask your administrator.")
+    user = find_user("email", name) if "@" in name else get_user(name)
+    if not user or not user["email"] or str(user["active"]) != "1" or not auth.reset_allowed(user["username"]):
+        time.sleep(0.3)
+        return answer
+    token, _ = auth.new_token("reset", email=user["email"], username=user["username"], by=user["username"],
+                              minutes=auth.RESET_MINUTES)
+    try:
+        auth.send_mail(user["email"], *auth.reset_mail(user["full_name"], user["username"],
+                                                       f"{auth.base_url()}/#/reset/{token}"))
+        audit(user["username"], "reset_requested")
+    except (RuntimeError, ValueError) as e:
+        audit(user["username"], "reset_mail_failed", str(e)[:200])
+    return answer
+
+
+@app.get("/api/auth/reset/{token}")
+def auth_reset_get(token: str):
+    row = auth.find_token("reset", token)
+    if not row:
+        raise HTTPException(404, "This reset link is not valid any more. Ask for a new one.")
+    return {"username": row["username"]}
+
+
+@app.post("/api/auth/reset/{token}")
+async def auth_reset(token: str, request: Request, response: Response):
+    b = await request.json()
+    password = str(b.get("password", ""))
+    if len(password) < 8:
+        raise HTTPException(400, "Passwords need at least 8 characters")
+    with auth.ACCEPT_LOCK:
+        row = auth.find_token("reset", token)
+        user = get_user(row["username"]) if row else None
+        if not row or not user or str(user["active"]) != "1":
+            raise HTTPException(404, "This reset link is not valid any more. Ask for a new one.")
+        save_user(user["username"], user["full_name"], user["role"], user["region_code"], password=password,
+                  must_change=0, active=1, keep=user)
+        auth.close_token(row, "used", user["username"])
+    auth.clear_fails(user["username"])
+    audit(user["username"], "password_reset")
+    sign_in(response, get_user(user["username"]), "password reset")
+    return {"ok": True}
+
+
+def back_to_app(error: str = "") -> RedirectResponse:
+    r = RedirectResponse(("/?signin_error=" + error.replace(" ", "+")[:300] + "#/") if error else "/#/", 303)
+    r.delete_cookie(FLOW_COOKIE, path="/api/auth/oidc")
+    return r
+
+
+@app.get("/api/auth/oidc/{provider}/start")
+def oidc_start(provider: str, invite: str = ""):
+    if provider not in auth.sso_ready():
+        raise HTTPException(404, "This sign-in option is not set up")
+    hint = ""
+    if invite:
+        row = auth.find_token("invite", invite)
+        if not row:
+            return back_to_app("This invitation link is not valid any more")
+        hint = row["email"]
+    url, flow = auth.start(provider, SECRET, invite, hint)
+    r = RedirectResponse(url, 303)
+    r.set_cookie(FLOW_COOKIE, flow, max_age=600, httponly=True, samesite="lax", path="/api/auth/oidc",
+                 secure=auth.base_url().startswith("https://"))
+    return r
+
+
+@app.get("/api/auth/oidc/{provider}/callback")
+def oidc_callback(provider: str, request: Request, code: str = "", state: str = "", error: str = ""):
+    if error or not code:
+        return back_to_app("The sign-in was cancelled")
+    flow = auth.unsign(SECRET, request.cookies.get(FLOW_COOKIE))
+    try:
+        who = auth.finish(provider, flow, code, state)
+    except auth.SSOError as e:
+        return back_to_app(str(e))
+    field, title = f"{provider}_sub", auth.sso_ready()[provider]["title"]
+    user = find_user(field, who["sub"])
+    if flow.get("i") and not user:  # accepting an invitation
+        with auth.ACCEPT_LOCK:
+            row = auth.find_token("invite", flow["i"])
+            if not row:
+                return back_to_app("This invitation link is not valid any more")
+            if who["email"] != row["email"]:
+                return back_to_app(f"The invitation is for {row['email']} but that {title} account is "
+                                   f"{who['email'] or 'without an address'}. Choose the right account, or "
+                                   "create a username and password instead.")
+            try:
+                user = accept_invite(row, free_username(row["email"]), row["full_name"] or who["name"] or row["email"],
+                                     **{field: who["sub"]})
+            except HTTPException as e:
+                return back_to_app(e.detail)
+    elif not user and who["email_trusted"]:
+        # first Google / Microsoft sign-in of an existing user whose address the provider vouches for
+        user = find_user("email", who["email"])
+        if user and not user[field]:
+            save_user(user["username"], user["full_name"], user["role"], user["region_code"],
+                      must_change=user["must_change"], active=user["active"], keep=user, **{field: who["sub"]})
+            audit(user["username"], "sso_linked", provider)
+            user = get_user(user["username"])
+        elif user:
+            user = None  # this address belongs to someone who already uses another account there
+    if not user:
+        audit(who["email"] or who["sub"], "login_failed", provider)
+        return back_to_app(f"No PUC Analytics account uses this {title} account. Ask your administrator "
+                           "for an invitation.")
+    if str(user["active"]) != "1" or user["role"] not in ROLES:
+        return back_to_app("Your account is disabled")
+    r = back_to_app()
+    r.set_cookie(COOKIE, make_token(user), httponly=True, samesite="lax", max_age=SESSION_HOURS * 3600,
+                 secure=auth.base_url().startswith("https://"))
+    audit(user["username"], "login", provider)
+    return r
 
 
 @app.get("/api/me")
@@ -215,7 +535,8 @@ def me(request: Request):
              (dashboards.PAGES[p]["utility"] is None or dashboards.PAGES[p]["utility"] in scope["utilities"])]
     return {
         "username": user["username"], "full_name": user["full_name"], "role": user["role"],
-        "role_title": role.title, "role_description": role.description,
+        "role_title": role.title, "role_description": role.description, "email": user["email"],
+        "has_password": bool(user["pw_hash"]),
         "island": ISLANDS[int(user["region_code"])], "must_change": str(user["must_change"]) == "1",
         "pages": pages, "can_load": role.can_load or "load_history" in role.pages, "can_run": role.can_load,
         "can_admin": role.can_admin, "can_review": role.can_review,
@@ -549,9 +870,16 @@ def need_admin(request: Request) -> dict:
 @app.get("/api/users")
 def users(request: Request):
     need_admin(request)
-    rows = q("SELECT username, full_name, role, region_code, active, must_change, toString(updated_at) AS updated "
-             f"FROM {APP_DB}.users FINAL ORDER BY username")
+    rows = q("SELECT username, full_name, email, role, region_code, active, must_change, created_by, "
+             "google_sub != '' AS google, microsoft_sub != '' AS microsoft, pw_hash != '' AS has_password, "
+             f"toString(updated_at) AS updated FROM {APP_DB}.users FINAL ORDER BY username")
+    for r in rows:
+        r["locked"] = auth.locked_for(r["username"]) > 0
     return {"users": rows,
+            "mail": {"configured": auth.mail_configured(), "base_url": auth.base_url(),
+                     "from": os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER", ""),
+                     "sso": [p["title"] for p in auth.sso_ready().values()],
+                     "sso_waiting": [p["title"] for k, p in auth.providers().items() if k not in auth.sso_ready()]},
             "roles": [{"id": k, "title": r.title, "description": r.description} for k, r in ROLES.items()],
             "islands": [{"code": c, "name": n} for c, n in ISLANDS.items()]}
 
@@ -561,8 +889,11 @@ async def upsert_user(request: Request):
     admin = need_admin(request)
     b = await request.json()
     username = str(b.get("username", "")).strip().lower()
-    if not username or not all(ch_.isalnum() or ch_ in "._-" for ch_ in username):
-        raise HTTPException(400, "Username: letters, digits, dot, dash or underscore")
+    if not username or len(username) > 40 or not all(ch_.isalnum() or ch_ in "._-" for ch_ in username):
+        raise HTTPException(400, "Username: letters, digits, dot, dash or underscore (up to 40)")
+    email = str(b.get("email") or "").strip().lower()
+    if email and not auth.valid_email(email):
+        raise HTTPException(400, "Enter a valid e-mail address, or leave it empty")
     if b.get("role") not in ROLES:
         raise HTTPException(400, "Unknown role")
     region = int(b.get("region_code") or 0)
@@ -571,6 +902,11 @@ async def upsert_user(request: Request):
     if b.get("role") == "regional_manager" and not region:
         raise HTTPException(400, "A regional manager needs an island")
     existing = get_user(username)
+    if b.get("new") and existing:
+        raise HTTPException(400, "This username is taken. Choose another one.")
+    other = find_user("email", email)
+    if other and other["username"] != username:
+        raise HTTPException(400, f"This e-mail address belongs to '{other['username']}'")
     password = b.get("password") or None
     if not existing and not password:
         raise HTTPException(400, "A new user needs a password")
@@ -580,16 +916,25 @@ async def upsert_user(request: Request):
         raise HTTPException(400, "You cannot demote or disable your own account")
     save_user(username, str(b.get("full_name") or username), b["role"], region, password=password,
               must_change=1 if password else int(existing["must_change"]) if existing else 1,
-              active=1 if b.get("active", True) else 0, keep=existing)
+              active=1 if b.get("active", True) else 0, keep=existing, email=email,
+              created_by=None if existing else admin["username"],
+              # changing the address forgets the Google / Microsoft accounts linked through the old one
+              **({"google_sub": "", "microsoft_sub": ""} if existing and existing["email"] != email else {}))
+    if b.get("unlink"):
+        u = get_user(username)
+        save_user(username, u["full_name"], u["role"], u["region_code"], must_change=u["must_change"],
+                  active=u["active"], keep=u, google_sub="", microsoft_sub="")
+    auth.clear_fails(username)  # saving also lifts a wrong-password lock
     audit(admin["username"], "user_saved", username)
     return {"ok": True}
 
 
 @app.post("/api/me/password")
-async def change_password(request: Request):
+async def change_password(request: Request, response: Response):
     user = current_user(request)
     b = await request.json()
-    if hash_pw(str(b.get("current", "")), user["salt"]) != user["pw_hash"]:
+    # someone who signs in with Google / Microsoft only has no current password to give
+    if user["pw_hash"] and not password_ok(user, str(b.get("current", ""))):
         raise HTTPException(400, "Current password is wrong")
     new = str(b.get("new", ""))
     if len(new) < 8:
@@ -597,7 +942,25 @@ async def change_password(request: Request):
     save_user(user["username"], user["full_name"], user["role"], user["region_code"], password=new, must_change=0,
               active=1, keep=user)
     audit(user["username"], "password_changed")
+    sign_in(response, get_user(user["username"]), "password changed")  # other sessions end, this one goes on
     return {"ok": True}
+
+
+@app.post("/api/mail/test")
+async def mail_test(request: Request):
+    admin = need_admin(request)
+    b = await request.json()
+    to = str(b.get("to") or admin["email"]).strip().lower()
+    link = link_base(request) + "/#/"
+    try:
+        auth.send_mail(to, "PUC Analytics: test e-mail", f"E-mail from PUC Analytics works.\n\n{link}\n",
+                       auth._mail_html("E-mail works", ["This test message from PUC Analytics arrived, so "
+                                       "invitations and password resets can be e-mailed."], "Open PUC Analytics",
+                                       link, f"Sent by {admin['username']}."))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    audit(admin["username"], "mail_test", to)
+    return {"ok": True, "to": to}
 
 
 @app.exception_handler(RuntimeError)

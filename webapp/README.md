@@ -39,6 +39,43 @@ server, not in the browser. `test_webapp.py` checks them.
 Roles are defined in `roles.py`. To add a role, add an entry there, then assign users to it on the
 **Users & roles** page.
 
+## Adding users and signing in
+
+On **Users & roles** an administrator has two ways to add someone:
+
+- **Add user → Create account**: name, username, e-mail (optional), role, island and a starting
+  password. The user must change that password at first sign-in.
+- **Invite by e-mail**: e-mail address, role and island. The person gets an e-mail with a link to
+  create the account themselves. They choose a username and password, or click **Continue with
+  Google** or **Continue with Microsoft**, using the account for the invited address. The link works
+  once and for 7 days. The **Invitations** list shows each invitation as waiting, accepted, withdrawn or
+  expired, and you can **Resend** (a new link; the old one stops working) or **Withdraw** it. The
+  administrator always gets the link to copy as well, so an invitation works even without e-mail set up.
+
+Signing in:
+
+- People sign in with their username or e-mail address.
+- After 5 wrong passwords an account is locked for 15 minutes. Saving the user on Users & roles lifts the lock.
+- **Forgot password?** e-mails a reset link that works once, for 60 minutes. The answer is the same
+  whether or not the account exists.
+- Changing or resetting a password signs that account out everywhere else.
+- Sign-ins, failures, invitations and resets are written to `puc_app.audit`.
+
+Settings, in `.env` (see `.env.example`):
+
+| Setting | For |
+|---|---|
+| `APP_BASE_URL` | The address people open, e.g. `https://analytics.puc.sc`. E-mailed links use it, never the request's Host. It is needed for Forgot password and for Google / Microsoft sign-in. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS` | Sending e-mail. Gmail: `smtp.gmail.com`, 587, an [app password](https://myaccount.google.com/apppasswords). Microsoft 365: `smtp.office365.com`, 587 (SMTP AUTH must be allowed for that mailbox). **Send a test e-mail** on Users & roles checks it. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | "Continue with Google". In Google Cloud Console, create an OAuth client (Web application) with redirect URI `<APP_BASE_URL>/api/auth/oidc/google/callback`. |
+| `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT` | "Continue with Microsoft". In Microsoft Entra, create an app registration with redirect URI (Web) `<APP_BASE_URL>/api/auth/oidc/microsoft/callback`. `MS_TENANT` is your tenant id (only PUC accounts), `organizations` (any work account, the default) or `common` (work and personal accounts). |
+
+Google and Microsoft only return to an `https://` address (or `http://localhost`), so their sign-in
+needs the app behind HTTPS. A Google or Microsoft account is tied to the user by the provider's
+account id. After that, a change of address at the provider changes nothing here. An existing user's
+first Google sign-in links automatically when Google has verified the address. For Microsoft this
+happens only when `MS_TENANT` is your own tenant. **Edit → Unlink** removes the link.
+
 ## Loading data
 
 Go to **Data Load**, drop the Statistic Report export (`.xlsx`, `.csv` or a `.zip`) and press **Run**.
@@ -128,7 +165,8 @@ loses its dates, and the billing month then has to be recovered from the batch.
 
 ## What's in it
 
-- `server.py`: API, sign-in (hashed passwords, signed session cookie), roles, the load runner
+- `server.py`: API, sign-in (hashed passwords, signed session cookie), users and invitations, roles, the load runner
+- `auth.py`: e-mail, invitation and reset links, Google / Microsoft sign-in, the wrong-password lock
 - `dashboards.py`: the 10 dashboards as metrics over the built lines (`ub.fact_lines`), with
   customer and connection roll-ups (bill size, rank, change since the previous period)
 - `review.py`: the review workflow: rows with pending edits, edit / add / delete / undo, the log
@@ -139,3 +177,5 @@ loses its dates, and the billing month then has to be recovered from the batch.
 - `static/`: the front end (HTML, CSS, SVG charts). It has no external libraries, so it works on a
   network without internet access.
 - `test_webapp.py`: role and data-scope tests
+- `test_auth.py`: sign-in, lockout, Add user, invitations, password reset, Google / Microsoft (142 checks,
+  against a local mail catcher and a stand-in provider)

@@ -8,14 +8,18 @@
 
   async function api(path, opts = {}) {
     const r = await fetch(path, { credentials: "same-origin", headers: opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}, ...opts });
-    if (r.status === 401 && !path.endsWith("/login")) { state.me = null; showLogin(); throw new Error("signed out"); }
+    if (r.status === 401 && !path.endsWith("/login") && !PUBLIC.test(routeId())) { state.me = null; showLogin(); throw new Error("signed out"); }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.detail || `Request failed (${r.status})`);
     return data;
   }
 
-  // ------------------------------------------------------------------ login
-  function showLogin(msg) {
+  // ------------------------------------------------------------------ sign-in screens (no session needed)
+  const PUBLIC = /^(invite|reset|forgot)(\/|$)/;
+  let authCfg = null;
+  const authConfig = async () => authCfg || (authCfg = await api("/api/auth/config").catch(() => ({ sso: [], forgot: false })));
+
+  function authScreen(inner) {
     app.innerHTML = `
     <div class="login">
       <section class="login-brand">
@@ -28,28 +32,103 @@
         </div>
         <small style="opacity:.6">Mahe · Praslin · La Digue</small>
       </section>
-      <section class="login-form">
+      <section class="login-form">${inner}</section>
+    </div>`;
+    return app.querySelector(".login-form");
+  }
+  const errBox = (msg) => msg ? `<div class="error">${icon("x")} ${esc(msg)}</div>` : "";
+  const ssoButtons = (list, invite) => list.length ? `<div class="sso">${list.map((p) =>
+    `<a class="btn block sso-btn" href="/api/auth/oidc/${p.id}/start${invite ? "?invite=" + encodeURIComponent(invite) : ""}">${icon(p.id, "i brand")}Continue with ${esc(p.title)}</a>`).join("")}</div>` : "";
+  const orLine = (text) => `<div class="or"><span>${text}</span></div>`;
+  // one submit handler shape for every sign-in form: disable, call, show the error
+  function onForm(form, busy, fn) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector("button[type=submit]"), label = btn.textContent;
+      btn.disabled = true; btn.textContent = busy;
+      try { await fn(new FormData(form)); }
+      catch (err) { form.querySelector(".msg").innerHTML = errBox(err.message); btn.disabled = false; btn.textContent = label; }
+    });
+  }
+
+  async function showLogin(msg) {
+    if (PUBLIC.test(routeId())) return publicPage();
+    const cfg = await authConfig();
+    const box = authScreen(`
         <form id="login-form" autocomplete="on">
           <h2>Sign in</h2>
           <p class="sub">Use the account your administrator gave you.</p>
-          ${msg ? `<div class="error">${icon("x")} ${esc(msg)}</div>` : ""}
-          <label class="field"><span>Username</span><input name="username" autocomplete="username" required autofocus></label>
-          <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+          <div class="msg">${errBox(msg)}</div>
+          ${ssoButtons(cfg.sso)}${cfg.sso.length ? orLine("or with your username") : ""}
+          <label class="field"><span>Username or e-mail</span><input name="username" autocomplete="username" required ${cfg.sso.length ? "" : "autofocus"}></label>
+          <label class="field"><span class="field-row">Password${cfg.forgot ? `<a href="#/forgot" class="link">Forgot password?</a>` : ""}</span><input name="password" type="password" autocomplete="current-password" required></label>
           <button class="btn primary block" type="submit">Sign in</button>
-          <p class="foot">Need an account or a new password? Ask your administrator.</p>
-        </form>
-      </section>
-    </div>`;
-    document.getElementById("login-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const f = new FormData(e.target), btn = e.target.querySelector("button");
-      btn.disabled = true; btn.textContent = "Signing in…";
-      try {
-        await api("/api/login", { method: "POST", body: JSON.stringify({ username: f.get("username"), password: f.get("password") }) });
-        await boot();
-      } catch (err) { showLogin(err.message); }
+          <p class="foot">New here? Ask your administrator for an invitation.${cfg.forgot ? "" : " Forgotten your password? Your administrator can set a new one."}</p>
+        </form>`);
+    onForm(box.querySelector("form"), "Signing in…", async (f) => {
+      await api("/api/login", { method: "POST", body: JSON.stringify({ username: f.get("username"), password: f.get("password") }) });
+      await boot();
     });
   }
+
+  async function publicPage() {
+    const [kind, token] = routeId().split("/");
+    if (kind === "forgot") {
+      const box = authScreen(`<form id="forgot-form"><h2>Forgot your password?</h2>
+        <p class="sub">Give your username or e-mail address. If the account has an e-mail address, a link to choose a new password is sent there.</p>
+        <div class="msg"></div>
+        <label class="field"><span>Username or e-mail</span><input name="username" required autofocus></label>
+        <button class="btn primary block" type="submit">${icon("send")}Send the link</button>
+        <p class="foot"><a href="#/" class="link">Back to sign in</a></p></form>`);
+      onForm(box.querySelector("form"), "Sending…", async (f) => {
+        const r = await api("/api/auth/forgot", { method: "POST", body: JSON.stringify({ username: f.get("username") }) });
+        box.innerHTML = `<div class="done-card"><div class="done-icon">${icon("mail")}</div><h2>Check your e-mail</h2><p class="sub">${esc(r.message)}</p><a href="#/" class="btn block">Back to sign in</a></div>`;
+      });
+      return;
+    }
+    if (kind === "reset") {
+      const box = authScreen(`<div class="loading-line">Checking the link…</div>`);
+      let d;
+      try { d = await api(`/api/auth/reset/${encodeURIComponent(token || "")}`); }
+      catch (err) { box.innerHTML = linkProblem(err.message, true); return; }
+      box.innerHTML = `<form id="reset-form"><h2>Choose a new password</h2>
+        <p class="sub">For the account <b>${esc(d.username)}</b>. At least 8 characters.</p><div class="msg"></div>
+        <label class="field"><span>New password</span><input name="password" type="password" minlength="8" required autocomplete="new-password" autofocus></label>
+        <label class="field"><span>Repeat it</span><input name="again" type="password" minlength="8" required autocomplete="new-password"></label>
+        <button class="btn primary block" type="submit">Save and sign in</button></form>`;
+      onForm(box.querySelector("form"), "Saving…", async (f) => {
+        if (f.get("password") !== f.get("again")) throw new Error("The two passwords differ.");
+        await api(`/api/auth/reset/${encodeURIComponent(token)}`, { method: "POST", body: JSON.stringify({ password: f.get("password") }) });
+        history.replaceState(null, "", location.pathname + "#/"); await boot();
+      });
+      return;
+    }
+    // an invitation
+    const box = authScreen(`<div class="loading-line">Checking the invitation…</div>`);
+    let d;
+    try { d = await api(`/api/invite/${encodeURIComponent(token || "")}`); }
+    catch (err) { box.innerHTML = linkProblem(err.message, false); return; }
+    const suggest = d.email.split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "").slice(0, 30);
+    const days = Math.max(1, Math.round((d.expires_at * 1000 - Date.now()) / 864e5));
+    box.innerHTML = `<form id="invite-form" autocomplete="on"><div class="eyebrow">Invitation</div><h2>Create your account</h2>
+      <p class="sub">You are invited as <span class="role-badge" style="--rc:${roleColor(d.role)}">${esc(d.role_title)}</span>${d.island && d.island !== "All islands" ? ` for <b>${esc(d.island)}</b>` : ""}.</p>
+      <div class="invite-for">${icon("mail")}<div><b>${esc(d.email)}</b><small>This link works once · ${days} day${days > 1 ? "s" : ""} left</small></div></div>
+      <div class="msg"></div>
+      ${d.sso.length ? ssoButtons(d.sso, token) + `<p class="hint">Use the ${d.sso.map((p) => esc(p.title)).join(" or ")} account for <b>${esc(d.email)}</b>.</p>` + orLine("or choose a username and password") : ""}
+      <label class="field"><span>Full name</span><input name="full_name" value="${esc(d.full_name)}" required autocomplete="name"></label>
+      <label class="field"><span>Username</span><input name="username" value="${esc(suggest)}" required pattern="[A-Za-z0-9._\\-]{1,40}" autocomplete="username"></label>
+      <label class="field"><span>Password</span><input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+      <label class="field"><span>Repeat password</span><input name="again" type="password" minlength="8" required autocomplete="new-password"></label>
+      <button class="btn primary block" type="submit">Create account and sign in</button>
+      <p class="foot">Already have an account? <a href="#/" class="link">Sign in</a></p></form>`;
+    onForm(box.querySelector("form"), "Creating…", async (f) => {
+      if (f.get("password") !== f.get("again")) throw new Error("The two passwords differ.");
+      await api(`/api/invite/${encodeURIComponent(token)}/accept`, { method: "POST", body: JSON.stringify({ username: f.get("username"), full_name: f.get("full_name"), password: f.get("password") }) });
+      history.replaceState(null, "", location.pathname + "#/"); await boot();
+    });
+  }
+  const linkProblem = (msg, reset) => `<div class="done-card"><div class="done-icon warn">${icon("link")}</div><h2>This link does not work</h2>
+    <p class="sub">${esc(msg)}</p>${reset ? `<a href="#/forgot" class="btn primary block">Ask for a new link</a>` : ""}<a href="#/" class="btn block">Go to sign in</a></div>`;
 
   // ------------------------------------------------------------------ shell
   const initials = (n) => n.split(/\s+/).filter((w) => /^[A-Za-z]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
@@ -1165,24 +1244,85 @@
   async function usersPage() {
     if (!state.me.can_admin) return notAllowed();
     const main = shell("users");
-    main.innerHTML = mobileTop("Users & roles") + `<div class="topbar"><div><div class="eyebrow">Admin</div><h1>Users &amp; roles</h1><p class="subtitle">Each user has a role (which pages and utilities) and optionally one island (which rows).</p></div><button class="btn primary" id="add">${icon("users")}Add user</button></div><div id="u"></div>`;
-    const d = await api("/api/users");
+    main.innerHTML = mobileTop("Users & roles") + `<div class="topbar"><div><div class="eyebrow">Admin</div><h1>Users &amp; roles</h1><p class="subtitle">Each user has a role (which pages and utilities) and optionally one island (which rows).</p></div>
+      <div class="actions-row"><button class="btn" id="invite">${icon("mail")}Invite by e-mail</button><button class="btn primary" id="add">${icon("plus")}Add user</button></div></div><div id="u"></div>`;
+    const [d, iv] = await Promise.all([api("/api/users"), api("/api/invites")]);
     const roleTitle = Object.fromEntries(d.roles.map((r) => [r.id, r.title]));
     const island = Object.fromEntries(d.islands.map((i) => [i.code, i.name]));
+    const status = (u) => !+u.active ? `<span class="dot-status off">Disabled</span>` : u.locked ? `<span class="dot-status bad">Locked (wrong passwords)</span>`
+      : +u.must_change ? `<span class="dot-status warn">Must change password</span>` : `<span class="dot-status">Active</span>`;
+    const signIn = (u) => [+u.has_password ? `<span class="chip-s" title="Username and password">${icon("key")}</span>` : "",
+      +u.google ? `<span class="chip-s" title="Google account linked">${icon("google", "i brand")}</span>` : "",
+      +u.microsoft ? `<span class="chip-s" title="Microsoft account linked">${icon("microsoft", "i brand")}</span>` : ""].join("");
+    const open = iv.invites.filter((i) => i.status === "pending").length;
+    const when = (ts) => new Date(ts * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    const ISTAT = { pending: "Waiting", accepted: "Accepted", revoked: "Withdrawn", expired: "Expired" };
+    const m = d.mail;
     main.querySelector("#u").innerHTML = `
-      <section class="card wide"><div class="card-head"><div><h3>People</h3><div class="meta">${d.users.length} accounts</div></div></div>
-      <div class="tbl-wrap"><table class="data"><thead><tr><th>User</th><th>Role</th><th>Island</th><th>Status</th><th></th></tr></thead><tbody>
+      <section class="card wide mail-card ${m.configured ? "ok" : "off"}"><div class="mail-state">${icon("mail")}<div>
+        <b>${m.configured ? `Invitations are e-mailed from ${esc(m.from || "the configured account")}` : "E-mail is not set up"}</b>
+        <small>${m.configured ? (m.base_url ? `Links point to ${esc(m.base_url)}` : "Set APP_BASE_URL in .env so links point to the right address and “Forgot password” works")
+          : "Invitations still work: you get the link to copy and send. Set SMTP_* in .env (Gmail or Microsoft 365) to e-mail them."}
+          ${m.sso.length ? ` · Sign-in with ${m.sso.map(esc).join(" and ")} is on` : m.sso_waiting.length ? ` · ${m.sso_waiting.map(esc).join(" and ")} sign-in needs APP_BASE_URL` : ""}</small></div></div>
+        ${m.configured ? `<button class="btn small" id="mailtest">${icon("send")}Send a test e-mail</button>` : ""}</section>
+      <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>People</h3><div class="meta">${d.users.length} accounts</div></div></div>
+      <div class="tbl-wrap"><table class="data"><thead><tr><th>User</th><th>Role</th><th>Island</th><th>Sign-in</th><th>Status</th><th></th></tr></thead><tbody>
       ${d.users.map((u) => `<tr><td><div class="user-cell"><span class="avatar" style="background:${roleColor(u.role)}">${esc(initials(u.full_name) || u.username[0].toUpperCase())}</span>
-          <div><b>${esc(u.full_name)}</b><small>${esc(u.username)}</small></div></div></td>
+          <div><b>${esc(u.full_name)}</b><small>${esc(u.username)}${u.email ? " · " + esc(u.email) : ""}</small></div></div></td>
         <td><span class="role-badge" style="--rc:${roleColor(u.role)}">${esc(roleTitle[u.role] || u.role)}</span></td><td>${esc(island[u.region_code])}</td>
-        <td>${+u.active ? (+u.must_change ? `<span class="dot-status warn">Must change password</span>` : `<span class="dot-status">Active</span>`) : `<span class="dot-status off">Disabled</span>`}</td>
+        <td><div class="chips-s">${signIn(u)}</div></td><td>${status(u)}</td>
         <td class="n"><button class="btn small" data-edit="${esc(u.username)}">${icon("edit")}Edit</button></td></tr>`).join("")}
       </tbody></table></div></section>
+      <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>Invitations</h3><div class="meta">${open} waiting · links work once and expire after 7 days</div></div></div>
+      ${iv.invites.length ? `<div class="tbl-wrap"><table class="data"><thead><tr><th>E-mail</th><th>Role</th><th>Island</th><th>Invited</th><th>Status</th><th></th></tr></thead><tbody>
+      ${iv.invites.map((i) => `<tr><td><b>${esc(i.email)}</b>${i.full_name ? `<small class="muted-line">${esc(i.full_name)}</small>` : ""}</td>
+        <td><span class="role-badge" style="--rc:${roleColor(i.role)}">${esc(roleTitle[i.role] || i.role)}</span></td><td>${esc(island[i.region_code])}</td>
+        <td>${when(i.created_at)}<small class="muted-line">by ${esc(i.created_by)}${i.sent ? " · e-mailed" : ""}</small></td>
+        <td><span class="inv-status ${i.status}">${ISTAT[i.status] || i.status}</span>${i.status === "accepted" ? `<small class="muted-line">as ${esc(i.used_by)}</small>` : i.status === "pending" ? `<small class="muted-line">until ${when(i.expires_at)}</small>` : ""}</td>
+        <td class="n">${i.status === "pending" || i.status === "expired" ? `<button class="btn small" data-resend="${i.id}" title="A new link; the old one stops working">${icon("send")}${i.status === "expired" ? "Send again" : "Resend"}</button>` : ""}
+          ${i.status === "pending" ? `<button class="btn small" data-revoke="${i.id}">${icon("x")}Withdraw</button>` : ""}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="empty-note">No invitations yet. Use <b>Invite by e-mail</b> to let someone create their own account.</p>`}</section>
       <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>Roles</h3><div class="meta">What each role sees · defined in webapp/roles.py</div></div></div>
       <div class="role-cards">${d.roles.map((r) => `<div class="role-card"><span class="role-badge" style="--rc:${roleColor(r.id)}">${esc(r.title)}</span><p>${esc(r.description)}</p></div>`).join("")}</div></section>`;
-    const edit = (u) => userModal(u, d, () => usersPage());
-    main.querySelector("#add").onclick = () => edit(null);
-    main.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => edit(d.users.find((u) => u.username === b.dataset.edit)));
+    const again = () => usersPage();
+    main.querySelector("#add").onclick = () => userModal(null, d, again, "create");
+    main.querySelector("#invite").onclick = () => userModal(null, d, again, "invite");
+    main.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => userModal(d.users.find((u) => u.username === b.dataset.edit), d, again));
+    main.querySelectorAll("[data-resend]").forEach((b) => b.onclick = async () => {
+      b.disabled = true;
+      try { inviteSent(await api(`/api/invites/${b.dataset.resend}/resend`, { method: "POST" }), again); }
+      catch (err) { b.disabled = false; toast(`${icon("x")}<span>${esc(err.message)}</span>`, "bad"); }
+    });
+    main.querySelectorAll("[data-revoke]").forEach((b) => b.onclick = async () => {
+      if (!confirm("Withdraw this invitation? Its link stops working.")) return;
+      try { await api(`/api/invites/${b.dataset.revoke}/revoke`, { method: "POST" }); again(); } catch (err) { toast(`${icon("x")}<span>${esc(err.message)}</span>`, "bad"); }
+    });
+    main.querySelector("#mailtest")?.addEventListener("click", () => modal(`<h2>Send a test e-mail</h2><p class="sub">Checks that the mail server accepts messages from the app.</p>
+      <form id="mf"><div id="merr"></div><label class="field"><span>Send to</span><input name="to" type="email" value="${esc(state.me.email || "")}" required></label>
+      <div class="actions"><button type="button" class="btn" id="cancel">Cancel</button><button class="btn primary" type="submit">${icon("send")}Send</button></div></form>`, (mm, close) => {
+      mm.querySelector("#cancel").onclick = close;
+      mm.querySelector("#mf").onsubmit = async (e) => {
+        e.preventDefault(); const btn = mm.querySelector("button[type=submit]"); btn.disabled = true;
+        try { const r = await api("/api/mail/test", { method: "POST", body: JSON.stringify({ to: new FormData(e.target).get("to") }) }); close(); toast(`${icon("check")}<span>Test e-mail sent to <b>${esc(r.to)}</b>.</span>`, "good"); }
+        catch (err) { btn.disabled = false; mm.querySelector("#merr").innerHTML = `<div class="error">${esc(err.message)}</div>`; }
+      };
+    }));
+  }
+
+  // after an invitation is made or re-sent: say whether it was e-mailed, and always offer the link
+  function inviteSent(r, done) {
+    modal(`<div class="done-icon ${r.sent ? "" : "warn"}">${icon(r.sent ? "mail" : "link")}</div>
+      <h2>${r.sent ? "Invitation sent" : "Invitation ready"}</h2>
+      <p class="sub">${r.sent ? `An e-mail with the link is on its way to <b>${esc(r.email)}</b>.` : `${esc(r.error)} Send it to <b>${esc(r.email)}</b>.`}</p>
+      <label class="field"><span>Invitation link · works once, for 7 days</span><div class="copy-row"><input id="ilink" value="${esc(r.link)}" readonly><button class="btn" id="copy" type="button">${icon("copy")}Copy</button></div></label>
+      <div class="actions"><button class="btn primary" id="ok">Done</button></div>`, (m, close) => {
+      m.querySelector("#ok").onclick = () => { close(); done(); };
+      m.querySelector("#copy").onclick = async () => {
+        const inp = m.querySelector("#ilink"); inp.select();
+        try { await navigator.clipboard.writeText(inp.value); } catch (e) { document.execCommand("copy"); }
+        m.querySelector("#copy").innerHTML = `${icon("check")}Copied`;
+      };
+    });
   }
 
   // one colour per role, for badges and avatars (not data colours)
@@ -1194,37 +1334,76 @@
   function modal(html, onMount) {
     const root = document.getElementById("modal-root");
     root.innerHTML = `<div class="modal-back"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
-    const close = () => { root.innerHTML = ""; };
+    const close = () => { root.innerHTML = ""; removeEventListener("keydown", esc_); };
+    // Escape closes, except a dialog that must be answered (the first-password change)
+    const esc_ = (e) => { if (e.key === "Escape" && root.querySelector(".modal") && !root.querySelector("[data-forced]")) close(); };
+    addEventListener("keydown", esc_);
     onMount(root.querySelector(".modal"), close);
     root.querySelector("input,select")?.focus();
   }
 
-  function userModal(u, d, done) {
-    modal(`<h2>${u ? "Edit " + esc(u.username) : "Add a user"}</h2><p class="sub">${u ? "Leave the password empty to keep it." : "They must change the password at first sign-in."}</p>
-      <form id="uf"><div id="uerr"></div>
-      <label class="field"><span>Username</span><input name="username" value="${esc(u?.username || "")}" ${u ? "readonly" : ""} required></label>
+  function userModal(u, d, done, mode = "create") {
+    // no role is picked in advance for a new person: a slip must not make an administrator
+    const roles = (u ? "" : `<option value="" disabled selected>Choose a role…</option>`) +
+      d.roles.map((r) => `<option value="${r.id}" ${u?.role === r.id ? "selected" : ""}>${esc(r.title)}</option>`).join("");
+    const islands = d.islands.map((i) => `<option value="${i.code}" ${+u?.region_code === i.code ? "selected" : ""}>${esc(i.name)}</option>`).join("");
+    const linked = u && (+u.google || +u.microsoft);
+    const createForm = `<form id="uf" data-mode="create"><div class="uerr"></div>
+      <div class="form-grid">
       <label class="field"><span>Full name</span><input name="full_name" value="${esc(u?.full_name || "")}" required></label>
-      <label class="field"><span>Role</span><select name="role">${d.roles.map((r) => `<option value="${r.id}" ${u?.role === r.id ? "selected" : ""}>${esc(r.title)}</option>`).join("")}</select></label>
-      <label class="field"><span>Island</span><select name="region_code">${d.islands.map((i) => `<option value="${i.code}" ${+u?.region_code === i.code ? "selected" : ""}>${esc(i.name)}</option>`).join("")}</select></label>
-      <label class="field"><span>${u ? "New password" : "Password"}</span><input name="password" type="password" minlength="8" ${u ? "" : "required"} autocomplete="new-password"></label>
-      <label style="display:flex;gap:8px;align-items:center;margin:-4px 0 12px"><input type="checkbox" name="active" ${!u || +u.active ? "checked" : ""}> Account active</label>
-      <div class="actions"><button type="button" class="btn" id="cancel">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`,
+      <label class="field"><span>Username</span><input name="username" value="${esc(u?.username || "")}" ${u ? "readonly" : ""} required pattern="[A-Za-z0-9._\\-]{1,40}"></label>
+      <label class="field span2"><span>E-mail <em>(optional · for sign-in by e-mail, Google / Microsoft and password resets)</em></span><input name="email" type="email" value="${esc(u?.email || "")}"></label>
+      <label class="field"><span>Role</span><select name="role" required>${roles}</select></label>
+      <label class="field"><span>Island</span><select name="region_code">${islands}</select></label>
+      <label class="field span2"><span>${u ? "New password <em>(leave empty to keep it)</em>" : "Starting password"}</span><input name="password" type="password" minlength="8" ${u ? "" : "required"} autocomplete="new-password"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="active" ${!u || +u.active ? "checked" : ""}> Account active</label>
+      ${linked ? `<label class="check"><input type="checkbox" name="unlink"> Unlink the Google / Microsoft account</label>` : ""}
+      <p class="hint">${u ? "A new password must be changed at the next sign-in." : "They must change this password at first sign-in."}</p>
+      <div class="actions"><button type="button" class="btn cancel">Cancel</button><button class="btn primary" type="submit">${u ? "Save" : "Create account"}</button></div></form>`;
+    const inviteForm = `<form id="if" data-mode="invite"><div class="uerr"></div>
+      <p class="hint" style="margin-top:0">They get an e-mail with a link to create their account: their own username and password, or their Google / Microsoft account for this address.</p>
+      <div class="form-grid">
+      <label class="field span2"><span>E-mail address</span><input name="email" type="email" required placeholder="name@gmail.com or name@company.com"></label>
+      <label class="field span2"><span>Full name <em>(optional)</em></span><input name="full_name"></label>
+      <label class="field"><span>Role</span><select name="role" required>${roles}</select></label>
+      <label class="field"><span>Island</span><select name="region_code">${islands}</select></label>
+      </div>
+      <div class="actions"><button type="button" class="btn cancel">Cancel</button><button class="btn primary" type="submit">${icon("send")}Send invitation</button></div></form>`;
+    modal(`<h2>${u ? "Edit " + esc(u.username) : "Add a user"}</h2>
+      ${u ? "" : `<div class="tabs"><button type="button" data-t="create" class="${mode === "create" ? "on" : ""}">${icon("key")}Create account</button><button type="button" data-t="invite" class="${mode === "invite" ? "on" : ""}">${icon("mail")}Invite by e-mail</button></div>`}
+      <div id="ubody">${u || mode === "create" ? createForm : inviteForm}</div>`,
     (m, close) => {
-      m.querySelector("#cancel").onclick = close;
-      m.querySelector("#uf").onsubmit = async (e) => {
-        e.preventDefault(); const f = new FormData(e.target);
-        try {
-          await api("/api/users", { method: "POST", body: JSON.stringify({ username: f.get("username"), full_name: f.get("full_name"), role: f.get("role"), region_code: +f.get("region_code"), password: f.get("password") || null, active: !!f.get("active") }) });
-          close(); done();
-        } catch (err) { m.querySelector("#uerr").innerHTML = `<div class="error">${esc(err.message)}</div>`; }
+      const bind = () => {
+        m.querySelectorAll(".cancel").forEach((b) => b.onclick = close);
+        const form = m.querySelector("form");
+        form.onsubmit = async (e) => {
+          e.preventDefault(); const f = new FormData(form), btn = form.querySelector("button[type=submit]");
+          const err = (msg) => { form.querySelector(".uerr").innerHTML = `<div class="error">${esc(msg)}</div>`; btn.disabled = false; };
+          btn.disabled = true;
+          try {
+            if (form.dataset.mode === "invite") {
+              const r = await api("/api/invites", { method: "POST", body: JSON.stringify({ email: f.get("email"), full_name: f.get("full_name"), role: f.get("role"), region_code: +f.get("region_code") }) });
+              close(); inviteSent(r, done); return;
+            }
+            await api("/api/users", { method: "POST", body: JSON.stringify({ new: !u, username: f.get("username"), full_name: f.get("full_name"), email: f.get("email"), role: f.get("role"), region_code: +f.get("region_code"), password: f.get("password") || null, active: !!f.get("active"), unlink: !!f.get("unlink") }) });
+            close(); done();
+          } catch (x) { err(x.message); }
+        };
+        form.querySelector("input:not([readonly]),select")?.focus();
       };
+      m.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+        m.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
+        m.querySelector("#ubody").innerHTML = b.dataset.t === "invite" ? inviteForm : createForm; bind();
+      });
+      bind();
     });
   }
 
   function passwordModal(forced) {
-    modal(`<h2>${forced ? "Choose a new password" : "Change password"}</h2><p class="sub">${forced ? "Your account still has its first password. Pick your own to continue." : "At least 8 characters."}</p>
-      <form id="pf"><div id="perr"></div>
-      <label class="field"><span>Current password</span><input name="current" type="password" required autocomplete="current-password"></label>
+    modal(`<h2>${forced ? "Choose a new password" : state.me.has_password ? "Change password" : "Set a password"}</h2><p class="sub">${forced ? "Your account still has its first password. Pick your own to continue." : "At least 8 characters."}</p>
+      <form id="pf" ${forced ? "data-forced" : ""}><div id="perr"></div>
+      ${state.me.has_password ? `<label class="field"><span>Current password</span><input name="current" type="password" required autocomplete="current-password"></label>` : `<p class="hint">You sign in with Google or Microsoft. A password lets you also sign in with your username.</p>`}
       <label class="field"><span>New password</span><input name="new" type="password" minlength="8" required autocomplete="new-password"></label>
       <label class="field"><span>Repeat new password</span><input name="again" type="password" minlength="8" required autocomplete="new-password"></label>
       <div class="actions">${forced ? "" : `<button type="button" class="btn" id="cancel">Cancel</button>`}<button class="btn primary" type="submit">Save password</button></div></form>`,
@@ -1233,7 +1412,7 @@
       m.querySelector("#pf").onsubmit = async (e) => {
         e.preventDefault(); const f = new FormData(e.target);
         if (f.get("new") !== f.get("again")) { m.querySelector("#perr").innerHTML = `<div class="error">The new passwords differ.</div>`; return; }
-        try { await api("/api/me/password", { method: "POST", body: JSON.stringify({ current: f.get("current"), new: f.get("new") }) }); close(); state.me.must_change = false; }
+        try { await api("/api/me/password", { method: "POST", body: JSON.stringify({ current: f.get("current") || "", new: f.get("new") }) }); close(); state.me.must_change = false; state.me.has_password = true; toast(`${icon("check")}<span>Password saved.</span>`, "good"); }
         catch (err) { m.querySelector("#perr").innerHTML = `<div class="error">${esc(err.message)}</div>`; }
       };
     });
@@ -1241,7 +1420,8 @@
 
   // ------------------------------------------------------------------ routing
   function route() {
-    if (!state.me) return;
+    if (PUBLIC.test(routeId())) return publicPage();  // an invitation or reset link opens the same for everyone
+    if (!state.me) return showLogin();
     const id = routeId();
     if (!id) {
       const first = state.me.pages[0]?.id || (state.me.can_load ? "load" : "");
@@ -1265,12 +1445,16 @@
   });
 
   async function boot() {
-    try { state.me = await api("/api/me"); }
-    catch (e) { return; }
+    if (!state.routed) { addEventListener("hashchange", route); state.routed = true; }
+    const signinError = new URLSearchParams(location.search).get("signin_error");  // back from Google / Microsoft
+    if (signinError) history.replaceState(null, "", location.pathname + location.hash);
+    if (PUBLIC.test(routeId())) return publicPage();
+    const r = await fetch("/api/me", { credentials: "same-origin" });
+    if (!r.ok) { state.me = null; return showLogin(signinError || (r.status === 401 && (await r.json().catch(() => ({}))).detail?.includes("password was changed") ? "Your password was changed. Please sign in again." : "")); }
+    state.me = await r.json();
     const periods = state.me.filters.periods;
     if (!state.filters.period && periods.length) state.filters.period = periods[periods.length - 1].period;
     readUrl();
-    if (!state.routed) { addEventListener("hashchange", route); state.routed = true; }
     route();
     bgResume();
   }

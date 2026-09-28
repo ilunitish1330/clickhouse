@@ -873,3 +873,73 @@ table.data tbody tr { transition: background .12s; }
 .filters label { padding: 4px 6px; }
 .panels { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
 #batches table.data th, #batches table.data td { padding: 8px 8px; }
+
+/* ---------------------------------------------------------------- sign-in, invitations, reset */
+svg.i.brand { stroke: none; }
+.sso { display: grid; gap: 10px; margin-bottom: 4px; }
+.sso-btn { display: flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none;
+  color: var(--ink); background: var(--surface); border: 1px solid var(--border); font-weight: 600; padding: 11px 14px; }
+.sso-btn:hover { background: var(--surface-2); border-color: color-mix(in srgb, var(--ink) 22%, transparent); }
+.sso-btn svg.i { width: 18px; height: 18px; }
+.or { display: flex; align-items: center; gap: 12px; margin: 18px 0; color: var(--muted); font-size: 12px; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.field .field-row { display: flex; justify-content: space-between; align-items: baseline; }
+.link { color: var(--brand-ink); text-decoration: none; font-weight: 600; font-size: 13px; }
+.link:hover { text-decoration: underline; }
+.field span em, .field .field-row em { font-style: normal; font-weight: 400; color: var(--muted); }
+.login-form .foot a.link { font-size: inherit; }
+.done-card { width: 100%; max-width: 360px; text-align: center; }
+.done-card .btn { margin-top: 10px; text-decoration: none; }
+.done-icon { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; margin: 0 auto 16px;
+  background: var(--brand-wash); color: var(--brand-ink); }
+.done-icon svg.i { width: 26px; height: 26px; }
+.done-icon.warn { background: color-mix(in srgb, var(--warning) 18%, transparent); color: #9a6700; }
+.modal .done-icon { margin: 4px 0 14px; }
+.loading-line { color: var(--muted); }
+.invite-for { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 12px; margin: 0 0 18px;
+  background: var(--brand-wash); color: var(--brand-ink); }
+.invite-for svg.i { flex: none; }
+.invite-for b { display: block; color: var(--ink); word-break: break-all; }
+.invite-for small { color: var(--ink-2); }
+.hint { font-size: 12.5px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
+.login-form .hint { margin: 2px 0 0; }
+.actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+section.card.mail-card { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; text-align: left; }
+.mail-state { display: flex; gap: 12px; align-items: center; }
+.mail-state > svg.i { flex: none; width: 36px; height: 36px; padding: 8px; border-radius: 10px;
+  background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good-ink); }
+.mail-card.off .mail-state > svg.i { background: color-mix(in srgb, var(--warning) 20%, transparent); color: #9a6700; }
+.mail-state b { display: block; }
+.mail-state small { color: var(--ink-2); }
+.chips-s { display: flex; gap: 6px; }
+.chip-s { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--ink-2); }
+.chip-s svg.i { width: 14px; height: 14px; }
+.dot-status.bad { color: var(--critical); }
+.dot-status.bad::before { background: var(--critical); }
+.inv-status { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+  background: var(--surface-2); color: var(--ink-2); }
+.inv-status.pending { background: var(--brand-wash); color: var(--brand-ink); }
+.inv-status.accepted { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good-ink); }
+.inv-status.expired { background: color-mix(in srgb, var(--warning) 20%, transparent); color: #8a5a00; }
+.muted-line { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.empty-note { color: var(--ink-2); margin: 4px 0 6px; }
+td.n .btn + .btn { margin-left: 6px; }
+.modal .tabs { margin: 4px 0 16px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.form-grid .span2 { grid-column: span 2; }
+.check { display: flex; gap: 8px; align-items: center; margin: 2px 0 8px; font-size: 14px; }
+.copy-row { display: flex; gap: 8px; }
+.copy-row input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.modal:has(.form-grid) { max-width: 520px; }
+@media (max-width: 560px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .form-grid .span2 { grid-column: auto; }
+  section.card.mail-card { flex-direction: column; align-items: flex-start; }
+}
+:root[data-theme="dark"] .done-icon.warn, :root[data-theme="dark"] .mail-card.off .mail-state > svg.i,
+:root[data-theme="dark"] .inv-status.expired { color: #f5c451; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .done-icon.warn, :root:not([data-theme="light"]) .mail-card.off .mail-state > svg.i,
+  :root:not([data-theme="light"]) .inv-status.expired { color: #f5c451; }
+}
