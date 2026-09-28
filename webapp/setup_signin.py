@@ -144,7 +144,10 @@ def wizard() -> dict:
     else:
         if kind == "gmail":
             print("   Gmail refuses your normal password here. With 2-Step Verification on, make an app password at\n"
-                  "   https://myaccount.google.com/apppasswords and paste its 16 letters (spaces are removed).")
+                  "   https://myaccount.google.com/apppasswords and paste its 16 letters (spaces are removed).\n"
+                  "   If that page says \"The setting you are looking for is not available for your account\":\n"
+                  "   turn on 2-Step Verification first (https://myaccount.google.com/signinoptions/twosv), then open\n"
+                  "   the page again. A company (Google Workspace) account needs its admin to allow it.")
             new.update(SMTP_HOST="smtp.gmail.com", SMTP_PORT="587", SMTP_TLS="starttls")
         elif kind == "m365":
             print("   Your Microsoft 365 admin must allow \"Authenticated SMTP\" for this mailbox (admin centre > Users >\n"
