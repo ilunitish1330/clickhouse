@@ -304,6 +304,12 @@ def checks(test_to: str = "") -> bool:
 
 if __name__ == "__main__":
     try:
+        import httpx  # noqa: F401  (the web app needs it too)
+    except ImportError:
+        sys.exit(f"This Python ({sys.executable}) does not have the web app's libraries (httpx is missing).\n"
+                 "Run the wizard with the same Python that runs the web app, or install them here:\n"
+                 "    pip install -r webapp/requirements.txt")
+    try:
         if "--check" in sys.argv:
             sys.exit(0 if checks() else 1)
         wizard()
