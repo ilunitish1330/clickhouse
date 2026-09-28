@@ -21,9 +21,10 @@
       <section class="login-brand">
         <div class="brandmark"><div class="logo">${icon("drop")}</div><div>PUC Analytics<small>Public Utilities Corporation</small></div></div>
         <div>
-          <h1>Billing and consumption insight for every island.</h1>
+          <h1>Billing and consumption insight for <em>every island.</em></h1>
           <p>Electricity, water and sewerage billing loaded into ClickHouse and turned into dashboards, shaped to your role.</p>
           <div class="login-utils"><span>${icon("bolt")} Electricity</span><span>${icon("drop")} Water</span><span>${icon("pipe")} Sewerage</span></div>
+          <div class="login-stats"><div><b>3</b><span>islands</span></div><div><b>3</b><span>utilities</span></div><div><b>10</b><span>dashboards</span></div></div>
         </div>
         <small style="opacity:.6">Mahe · Praslin · La Digue</small>
       </section>
@@ -35,6 +36,7 @@
           <label class="field"><span>Username</span><input name="username" autocomplete="username" required autofocus></label>
           <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
           <button class="btn primary block" type="submit">Sign in</button>
+          <p class="foot">Need an account or a new password? Ask your administrator.</p>
         </form>
       </section>
     </div>`;
@@ -54,7 +56,7 @@
 
   function shell(active) {
     const me = state.me;
-    const nav = me.pages.map((p) => `<a href="#/${p.id}" class="${active === p.id ? "active" : ""}">${icon(p.icon)}${esc(p.title)}</a>`).join("");
+    const nav = me.pages.map((p) => `<a href="#/${p.id}" class="${active === p.id ? "active" : ""}" ${p.utility ? `data-u="${p.utility}"` : ""}>${icon(p.icon)}${esc(p.title)}</a>`).join("");
     const data = me.can_load || me.can_review ? `<div class="nav-group">Data</div>${me.can_load ? `<a href="#/load" class="${active === "load" ? "active" : ""}">${icon("upload")}Data Load</a>` : ""}${me.can_review ? `<a href="#/review" class="${active === "review" ? "active" : ""}">${icon("edit")}Data Review</a>` : ""}` : "";
     const admin = me.can_admin ? `<div class="nav-group">Admin</div><a href="#/users" class="${active === "users" ? "active" : ""}">${icon("users")}Users &amp; roles</a>` : "";
     app.innerHTML = `
@@ -183,7 +185,8 @@
   function tileHtml(t, i) {
     const f = fmt(t.value, t.fmt, t.unit);
     const empty = t.value === null;
-    const valueHtml = empty ? "—" : t.fmt === "money" ? `<small class="cur">${CURRENCY}</small>${esc(f.text)}` : `${esc(f.text)}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}`;
+    const n = `<span class="cnt" data-v="${t.value}" data-fmt="${t.fmt}" data-unit="${esc(t.unit || "")}">${esc(f.text)}</span>`;
+    const valueHtml = empty ? "—" : t.fmt === "money" ? `<small class="cur">${CURRENCY}</small>${n}` : `${n}${f.unit ? `<small>${esc(f.unit)}</small>` : ""}`;
     const hasPrev = t.previous !== null && t.previous !== undefined && t.value !== null && t.previous !== 0;
     let foot = "";
     if (empty && (t.fmt === "qty" || t.fmt === "rate")) foot = `<div class="hint">Pick one utility to see this</div>`;
@@ -238,7 +241,7 @@
     main.innerHTML = mobileTop(page.title) + `
       <header class="hero-head accent-${accent}">
         <div class="hero-title"><span class="hero-ic">${icon(page.icon)}</span>
-          <div><h1>${esc(page.title)}</h1><p class="subtitle" id="subtitle">&nbsp;</p>
+          <div><div class="eyebrow">${page.utility ? `${esc(UTIL_NAMES[page.utility])} dashboard` : "Dashboard"}</div><h1>${esc(page.title)}</h1><p class="subtitle" id="subtitle">&nbsp;</p>
           <div class="chips">${coverage ? `<span class="chip soft">${coverage}</span>` : ""}<span class="chip soft built" id="built" hidden></span>${scopeChips(page).replace(/^<div class="chips">|<\/div>$/g, "")}</div></div></div>
         <div class="filter-zone" id="filter-zone"></div>
       </header>
@@ -346,8 +349,23 @@
       }));
       state.lastPage = { pageId, d };
       dash.classList.remove("loading");
+      countUp(dash);
     }
     await load();
+  }
+
+  // tile numbers count up to their value (skipped when the user prefers less motion)
+  function countUp(root) {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const els = [...root.querySelectorAll(".cnt")].filter((e) => e.dataset.v !== "null" && isFinite(+e.dataset.v));
+    if (!els.length) return;
+    const t0 = performance.now(), dur = 650;
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / dur), ease = 1 - Math.pow(1 - k, 3);
+      els.forEach((e) => { e.textContent = fmt(+e.dataset.v * ease, e.dataset.fmt, e.dataset.unit).text; });
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   }
 
   function noData(el) {
@@ -449,7 +467,7 @@
     const main = shell("load");
     const run = state.me.can_run;
     main.innerHTML = mobileTop("Data Load") + `
-      <div class="topbar"><div><h1>Data Load</h1><p class="subtitle">${run ? "Upload a Statistic Report export and press Run: its rows are stored in ClickHouse, the aggregates and dashboards are built, and the data goes live as a Draft until a reviewer marks it reviewed." : "What has been loaded, and when."}</p></div></div>
+      <div class="topbar"><div><div class="eyebrow">Data</div><h1>Data Load</h1><p class="subtitle">${run ? "Upload a Statistic Report export and press Run: its rows are stored in ClickHouse, the aggregates and dashboards are built, and the data goes live as a Draft until a reviewer marks it reviewed." : "What has been loaded, and when."}</p></div></div>
       <div class="panels">
         ${run ? `<section class="card">
           <div class="card-head"><div><h3>Load a billing export</h3><div class="meta">.xlsx, .csv, .tsv, .txt, or a .zip of them</div></div><span id="job-status"></span></div>
@@ -547,7 +565,9 @@
     async function refreshTables() {
       const d = await api("/api/loads");
       main.querySelector("#batches").innerHTML = d.batches.length ? `<div class="tbl-wrap"><table class="data"><thead><tr><th>Period</th><th>Status</th><th class="n">Billing lines</th><th class="n">Invoices</th><th class="n">Amount (${CURRENCY})</th></tr></thead><tbody>${d.batches.map((b) => `<tr><td>${esc(fmtPeriod(b.period))}</td><td>${statusPill(b.status, b.revision)}</td><td class="n">${(+b.lines).toLocaleString()}</td><td class="n">${(+b.invoices).toLocaleString()}</td><td class="n">${Math.round(b.amount).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">Nothing loaded yet.</div>`;
-      main.querySelector("#history").innerHTML = d.history.length ? `<div class="tbl-wrap scroll-y"><table class="data"><thead><tr><th>When</th><th>File</th><th class="n">Rows</th><th class="n">Amount</th></tr></thead><tbody>${d.history.map((h) => `<tr><td class="num">${esc(h.loaded_at)}</td><td>${esc(h.file_name)}</td><td class="n">${(+h.rows).toLocaleString()}</td><td class="n">${Math.round(h.amount).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">No loads recorded.</div>`;
+      main.querySelector("#history").innerHTML = d.history.length ? `<ul class="timeline">${d.history.map((h) => `<li>
+          <div class="t-top"><b>${esc(h.file_name)}</b><span>${esc(h.loaded_at.slice(0, 16))}</span></div>
+          <small>${(+h.rows).toLocaleString()} rows · ${CURRENCY} ${Math.round(h.amount).toLocaleString()}</small></li>`).join("")}</ul>` : `<div class="note">No loads recorded.</div>`;
       if (d.running && !bgTimer) bgWatch(d.running.id, d.running.file);  // e.g. started by another operator
     }
     bgListener = reflect; reflect();
@@ -572,7 +592,7 @@
     if (!state.me.can_review) return notAllowed();
     const main = shell("review");
     main.innerHTML = mobileTop("Data Review") + `
-      <div class="topbar"><div><h1>Data Review</h1><p class="subtitle">Uploads go live as a <b>Draft</b>. Check the dashboards and the rows, edit rows here if needed, press <b>Finalize modified data</b> to rebuild the aggregates and dashboards, then <b>Mark as reviewed</b> to make the data Final.</p></div></div>
+      <div class="topbar"><div><div class="eyebrow">Data</div><h1>Data Review</h1><p class="subtitle">Uploads go live as a <b>Draft</b>. Check the dashboards and the rows, edit rows here if needed, press <b>Finalize modified data</b> to rebuild the aggregates and dashboards, then <b>Mark as reviewed</b> to make the data Final.</p></div></div>
       <div class="rv-batches" id="rv-batches"><div class="skeleton"></div></div>
       <section class="card wide rv-panel" id="rv-panel" hidden></section>`;
     try { if (!rv.cols) rv.cols = await api("/api/review/columns"); } catch (e) { return; }
@@ -1145,22 +1165,31 @@
   async function usersPage() {
     if (!state.me.can_admin) return notAllowed();
     const main = shell("users");
-    main.innerHTML = mobileTop("Users & roles") + `<div class="topbar"><div><h1>Users &amp; roles</h1><p class="subtitle">Each user has a role (which pages and utilities) and optionally one island (which rows).</p></div><button class="btn primary" id="add">${icon("users")}Add user</button></div><div id="u"></div>`;
+    main.innerHTML = mobileTop("Users & roles") + `<div class="topbar"><div><div class="eyebrow">Admin</div><h1>Users &amp; roles</h1><p class="subtitle">Each user has a role (which pages and utilities) and optionally one island (which rows).</p></div><button class="btn primary" id="add">${icon("users")}Add user</button></div><div id="u"></div>`;
     const d = await api("/api/users");
     const roleTitle = Object.fromEntries(d.roles.map((r) => [r.id, r.title]));
     const island = Object.fromEntries(d.islands.map((i) => [i.code, i.name]));
     main.querySelector("#u").innerHTML = `
-      <section class="card wide"><div class="tbl-wrap"><table class="data"><thead><tr><th>User</th><th>Name</th><th>Role</th><th>Island</th><th>Status</th><th></th></tr></thead><tbody>
-      ${d.users.map((u) => `<tr><td><b>${esc(u.username)}</b></td><td>${esc(u.full_name)}</td><td>${esc(roleTitle[u.role] || u.role)}</td><td>${esc(island[u.region_code])}</td>
-        <td>${+u.active ? (+u.must_change ? `<span class="pill">Must change password</span>` : `<span class="pill">Active</span>`) : `<span class="pill off">Disabled</span>`}</td>
-        <td class="n"><button class="btn small" data-edit="${esc(u.username)}">Edit</button></td></tr>`).join("")}
+      <section class="card wide"><div class="card-head"><div><h3>People</h3><div class="meta">${d.users.length} accounts</div></div></div>
+      <div class="tbl-wrap"><table class="data"><thead><tr><th>User</th><th>Role</th><th>Island</th><th>Status</th><th></th></tr></thead><tbody>
+      ${d.users.map((u) => `<tr><td><div class="user-cell"><span class="avatar" style="background:${roleColor(u.role)}">${esc(initials(u.full_name) || u.username[0].toUpperCase())}</span>
+          <div><b>${esc(u.full_name)}</b><small>${esc(u.username)}</small></div></div></td>
+        <td><span class="role-badge" style="--rc:${roleColor(u.role)}">${esc(roleTitle[u.role] || u.role)}</span></td><td>${esc(island[u.region_code])}</td>
+        <td>${+u.active ? (+u.must_change ? `<span class="dot-status warn">Must change password</span>` : `<span class="dot-status">Active</span>`) : `<span class="dot-status off">Disabled</span>`}</td>
+        <td class="n"><button class="btn small" data-edit="${esc(u.username)}">${icon("edit")}Edit</button></td></tr>`).join("")}
       </tbody></table></div></section>
-      <section class="card wide" style="margin-top:14px"><div class="card-head"><div><h3>Roles</h3><div class="meta">Defined in webapp/roles.py</div></div></div>
-      <div class="tbl-wrap"><table class="data"><thead><tr><th>Role</th><th>What it sees</th></tr></thead><tbody>${d.roles.map((r) => `<tr><td><b>${esc(r.title)}</b></td><td>${esc(r.description)}</td></tr>`).join("")}</tbody></table></div></section>`;
+      <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>Roles</h3><div class="meta">What each role sees · defined in webapp/roles.py</div></div></div>
+      <div class="role-cards">${d.roles.map((r) => `<div class="role-card"><span class="role-badge" style="--rc:${roleColor(r.id)}">${esc(r.title)}</span><p>${esc(r.description)}</p></div>`).join("")}</div></section>`;
     const edit = (u) => userModal(u, d, () => usersPage());
     main.querySelector("#add").onclick = () => edit(null);
     main.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => edit(d.users.find((u) => u.username === b.dataset.edit)));
   }
+
+  // one colour per role, for badges and avatars (not data colours)
+  const ROLE_COLORS = { admin: "#1f63bd", executive: "#b45309", finance: "#0f766e", electricity_manager: "#c2410c",
+    water_manager: "#1d6fd1", regional_manager: "#0e7490", billing_officer: "#9a3412", customer_service: "#be185d",
+    auditor: "#475569", data_operator: "#0369a1", reviewer: "#4d7c0f" };
+  const roleColor = (r) => ROLE_COLORS[r] || "#475569";
 
   function modal(html, onMount) {
     const root = document.getElementById("modal-root");
