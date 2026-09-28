@@ -53,7 +53,11 @@ On **Users & roles** an administrator has two ways to add someone:
 - **Invite by e-mail**: e-mail address, role and island. The person gets an e-mail with a link to
   create the account themselves. They choose a username and password, or click **Continue with
   Google** or **Continue with Microsoft**, using the account for the invited address. The link works
-  once and for 7 days. The **Invitations** list shows each invitation as waiting, accepted, withdrawn or
+  once and for 7 days, and **only for the invited address**: to finish, the person types a 6-digit
+  code that the app e-mails to that address when they click **Send code**. The code is valid for 15
+  minutes with 5 tries, and one can be sent every 30 seconds. A forwarded invitation is useless
+  without that inbox. With Google or Microsoft, the provider must confirm that the account owns the
+  invited address. The **Invitations** list shows each invitation as waiting, accepted, withdrawn or
   expired, and you can **Resend** (a new link; the old one stops working) or **Withdraw** it. The
   administrator always gets the link to copy as well, so an invitation works even without e-mail set up.
 
