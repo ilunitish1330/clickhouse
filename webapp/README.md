@@ -96,6 +96,25 @@ account id. After that, a change of address at the provider changes nothing here
 first Google sign-in links automatically when Google has verified the address. For Microsoft this
 happens only when `MS_TENANT` is your own tenant. **Edit → Unlink** removes the link.
 
+## Opening the app from anywhere
+
+On its own the app is only reachable inside your network (e.g. `http://192.168.11.71:8021`). A
+tunnel gives it a public `https://` address, so invitation and reset links open from any phone or
+computer, and Google sign-in can be switched on. One command sets it up and makes the app and the
+tunnel start at boot (services `puc-analytics` and `puc-tunnel`):
+
+```bash
+bash webapp/setup_public.sh localxpose <subdomain> <access-token>     # https://<subdomain>.loclx.io
+bash webapp/setup_public.sh ngrok <your-domain>.ngrok-free.app <authtoken>
+```
+
+The address must stay the same, because e-mailed links point to it. With LocalXpose a chosen
+subdomain needs a paid plan (`REGION=eu` or `ap` picks a closer server); ngrok's free plan includes
+one fixed domain. The script first lists accounts still on the default password and offers to switch
+them off (`webapp/default_passwords.py`), because anyone on the internet could try them. It then sets
+`APP_BASE_URL`, stops an app started by hand on the port, installs the two services and checks the
+address from outside. After a `git pull`, run `sudo systemctl restart puc-analytics`.
+
 ## Loading data
 
 Go to **Data Load**, drop the Statistic Report export (`.xlsx`, `.csv` or a `.zip`) and press **Run**.

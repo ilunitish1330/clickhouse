@@ -4,6 +4,7 @@ setting, writes them into the repository's .env, and checks that each one works.
 
     python3 webapp/setup_signin.py            # the questions, then the checks
     python3 webapp/setup_signin.py --check    # only the checks, on the current .env
+    python3 webapp/setup_signin.py --base-url https://x.ngrok-free.app   # only change the address
 
 Press Enter to keep what .env already has (shown in brackets); passwords and
 secrets are typed hidden and never printed. Restart the web app afterwards.
@@ -311,6 +312,13 @@ if __name__ == "__main__":
                  "    pip install -r webapp/requirements.txt")
     try:
         if "--check" in sys.argv:
+            sys.exit(0 if checks() else 1)
+        if "--base-url" in sys.argv:  # only change the address (used by setup_public.sh)
+            url = sys.argv[sys.argv.index("--base-url") + 1].rstrip("/")
+            if check_url(url):
+                sys.exit(f"--base-url: {check_url(url)}")
+            write_env({"APP_BASE_URL": url})
+            print(f"APP_BASE_URL={url} saved to {ENV}")
             sys.exit(0 if checks() else 1)
         wizard()
         checks()
