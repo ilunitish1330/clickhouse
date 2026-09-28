@@ -9,3 +9,4 @@ models/
 **/.pbi/cache.abf
 data/uploads/
 webapp/.secret
+.env.bak

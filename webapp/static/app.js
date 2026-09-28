@@ -1262,7 +1262,7 @@
       <section class="card wide mail-card ${m.configured ? "ok" : "off"}"><div class="mail-state">${icon("mail")}<div>
         <b>${m.configured ? `Invitations are e-mailed from ${esc(m.from || "the configured account")}` : "E-mail is not set up"}</b>
         <small>${m.configured ? (m.base_url ? `Links point to ${esc(m.base_url)}` : "Set APP_BASE_URL in .env so links point to the right address and “Forgot password” works")
-          : "Invitations still work: you get the link to copy and send. Set SMTP_* in .env (Gmail or Microsoft 365) to e-mail them."}
+          : "Invitations still work: you get the link to copy and send. Run python3 webapp/setup_signin.py on the server to set up Gmail or Microsoft 365."}
           ${m.sso.length ? ` · Sign-in with ${m.sso.map(esc).join(" and ")} is on` : m.sso_waiting.length ? ` · ${m.sso_waiting.map(esc).join(" and ")} sign-in needs APP_BASE_URL` : ""}</small></div></div>
         ${m.configured ? `<button class="btn small" id="mailtest">${icon("send")}Send a test e-mail</button>` : ""}</section>
       <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>People</h3><div class="meta">${d.users.length} accounts</div></div></div>

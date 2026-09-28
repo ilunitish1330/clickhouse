@@ -61,7 +61,18 @@ Signing in:
 - Changing or resetting a password signs that account out everywhere else.
 - Sign-ins, failures, invitations and resets are written to `puc_app.audit`.
 
-Settings, in `.env` (see `.env.example`):
+**The easy way:** on the server, run
+
+```bash
+python3 webapp/setup_signin.py          # asks for each setting, writes .env, then checks them
+python3 webapp/setup_signin.py --check  # only the checks: sends a test e-mail, tests the Google / Microsoft keys
+```
+
+It shows where to click in Google and Microsoft, and which redirect address to register. It hides
+passwords as you type, keeps the rest of `.env`, saves the old file as `.env.bak` (both readable
+only by you), and makes `APP_SECRET`. Restart the web app afterwards.
+
+The settings it writes, in `.env` (see `.env.example`):
 
 | Setting | For |
 |---|---|
