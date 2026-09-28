@@ -79,6 +79,18 @@ smtp = socketserver.ThreadingTCPServer(("127.0.0.1", 2525), SMTPHandler)
 threading.Thread(target=smtp.serve_forever, daemon=True).start()
 
 
+def last_code(to: str) -> str:
+    msg = [m for m in OUTBOX if m["To"] == to and m["Subject"].endswith("is your PUC Analytics code")][-1]
+    return msg["Subject"].split()[0]
+
+
+def send_code(c, token: str, to: str) -> str:
+    auth._code_sends.clear()  # the 30-second gap between codes is checked on its own below
+    r = c.post(f"/api/invite/{token}/code")
+    ok(r.status_code == 200 and r.json()["email"] == to, r.text)
+    return last_code(to)
+
+
 def last_link(to: str) -> str:
     msg = [m for m in OUTBOX if m["To"] == to][-1]
     text = msg.get_body(("plain",)).get_content()
@@ -225,8 +237,9 @@ def main() -> None:
     ok("Internal Auditor + Data Reviewer" in [m for m in OUTBOX if m["To"] == "two.roles@x.test"][-1]
        .get_body(("plain",)).get_content(), "both roles in the e-mail")
     c = client()
+    code = send_code(c, tok, "two.roles@x.test")
     ok(c.post(f"/api/invite/{tok}/accept", json={"username": "two.roles", "full_name": "Two Roles",
-                                                 "password": "Two-pass-11"}).status_code == 200, "accept")
+                                                 "password": "Two-pass-11", "code": code}).status_code == 200, "accept")
     me = c.get("/api/me").json()
     ok(me["roles"] == ["auditor", "reviewer"] and me["can_review"] and me["can_load"], me)
 
@@ -298,13 +311,27 @@ def main() -> None:
 
     anon = client()
     d = anon.get(f"/api/invite/{token}").json()
-    ok(d["email"] == "sam.lee@outlook.com" and d["island"] == "Praslin" and len(d["sso"]) == 2, d)
-    for body, msg in [({"username": "bad name"}, "Username"), ({"password": "short"}, "8 characters"),
-                      ({"username": "jane.doe"}, "taken"), ({"full_name": ""}, "full name")]:
-        r = anon.post(f"/api/invite/{token}/accept", json={"username": "sam", "full_name": "Sam Lee",
-                                                            "password": "Sam-pass-11", **body})
-        ok(r.status_code == 400 and msg.lower() in r.text.lower(), (body, r.text))
-    r = anon.post(f"/api/invite/{token}/accept", json={"username": "Sam", "full_name": "Sam Lee", "password": "Sam-pass-11"})
+    ok(d["email"] == "sam.lee@outlook.com" and d["island"] == "Praslin" and len(d["sso"]) == 2 and d["needs_code"], d)
+    ok("works only for sam.lee@outlook.com" in mail.get_body(("plain",)).get_content(), "the e-mail says so")
+    # a forwarded link alone is not enough: the code goes to the invited address only
+    body = {"username": "sam", "full_name": "Sam Lee", "password": "Sam-pass-11"}
+    r = anon.post(f"/api/invite/{token}/accept", json=body)
+    ok(r.status_code == 400 and "send the code" in r.text, r.text)
+    r = anon.post(f"/api/invite/{token}/accept", json={**body, "code": "123456"})
+    ok(r.status_code == 400 and "send the code" in r.text, "a guess before any code was sent")
+    n = len(OUTBOX)
+    code = send_code(anon, token, "sam.lee@outlook.com")
+    ok(len(OUTBOX) == n + 1 and OUTBOX[-1]["To"] == "sam.lee@outlook.com" and re.fullmatch(r"\d{6}", code), "code mailed")
+    r = anon.post(f"/api/invite/{token}/code")
+    ok(r.status_code == 429 and "seconds" in r.text, "not twice in 30 seconds")
+    wrong = f"{(int(code) + 1) % 10 ** 6:06d}"
+    r = anon.post(f"/api/invite/{token}/accept", json={**body, "code": wrong})
+    ok(r.status_code == 400 and "4 tries left" in r.text, r.text)
+    for extra, msg in [({"username": "bad name"}, "Username"), ({"password": "short"}, "8 characters"),
+                       ({"username": "jane.doe"}, "taken"), ({"full_name": ""}, "full name")]:
+        r = anon.post(f"/api/invite/{token}/accept", json={**body, "code": code, **extra})
+        ok(r.status_code == 400 and msg.lower() in r.text.lower(), (extra, r.text))
+    r = anon.post(f"/api/invite/{token}/accept", json={**body, "username": "Sam", "code": f" {code[:3]} {code[3:]} "})
     ok(r.status_code == 200, r.text)
     me = anon.get("/api/me").json()
     ok(me["username"] == "sam" and me["role"] == "regional_manager" and me["island"] == "Praslin"
@@ -314,6 +341,35 @@ def main() -> None:
     ok(client().get(f"/api/invite/{token}").status_code == 404, "used once")
     ok(admin.get("/api/invites").json()["invites"][0]["status"] == "accepted", "accepted")
     ok(admin.post("/api/invites", json={"email": "sam.lee@outlook.com", "role": "finance"}).status_code == 400, "exists")
+
+    # wrong codes: five and the code is dead; a new code works; another invitation's code never does
+    ia = admin.post("/api/invites", json={"email": "ana@x.test", "role": "auditor"}).json()["link"].rsplit("/", 1)[1]
+    ib = admin.post("/api/invites", json={"email": "ben@x.test", "role": "auditor"}).json()["link"].rsplit("/", 1)[1]
+    c = client()
+    code_a, code_b = send_code(c, ia, "ana@x.test"), send_code(c, ib, "ben@x.test")
+    body = {"username": "ana", "full_name": "Ana", "password": "Ana-pass-11"}
+    if code_b != code_a:
+        r = c.post(f"/api/invite/{ia}/accept", json={**body, "code": code_b})
+        ok(r.status_code == 400 and "not right" in r.text, "a code from another invitation")
+    for _ in range(5):
+        r = c.post(f"/api/invite/{ia}/accept", json={**body, "code": "000000" if code_a != "000000" else "111111"})
+    ok(r.status_code == 400 and "Too many wrong codes" in r.text, r.text)
+    r = c.post(f"/api/invite/{ia}/accept", json={**body, "code": code_a})
+    ok(r.status_code == 400 and "Too many wrong codes" in r.text, "the right code is dead after five wrong ones")
+    code_a = send_code(c, ia, "ana@x.test")
+    row = auth.find_token("invite", ia)
+    auth.put_token({**row, "code_expires": int(time.time()) - 1})
+    r = c.post(f"/api/invite/{ia}/accept", json={**body, "code": code_a})
+    ok(r.status_code == 400 and "expired" in r.text, "an old code")
+    code_a = send_code(c, ia, "ana@x.test")
+    ok(c.post(f"/api/invite/{ia}/accept", json={**body, "code": code_a}).status_code == 200, "a fresh code works")
+    ok(client().post(f"/api/invite/{ia}/code").status_code == 404, "no codes for a used invitation")
+    auth._code_sends.clear()
+    for _ in range(5):
+        auth._code_sends.setdefault(auth.find_token("invite", ib)["id"], []).append(time.time() - 60)
+    r = client().post(f"/api/invite/{ib}/code")
+    ok(r.status_code == 429, "at most 5 codes an hour")
+    auth._code_sends.clear()
 
     # resend replaces the link; revoke closes it; a new invitation to the same address replaces the old
     inv = admin.post("/api/invites", json={"email": "kim@x.test", "role": "auditor"}).json()
@@ -390,13 +446,19 @@ def main() -> None:
     r = client().get("/api/auth/oidc/github/start", follow_redirects=False)
     ok(r.status_code == 404, "unknown provider")
 
-    # Microsoft: invitation; with a multi-tenant app the address is not trusted for linking
+    # Microsoft: with a multi-tenant app the address is not proven, so it cannot accept an invitation ...
     inv = admin.post("/api/invites", json={"email": "mia@contoso.test", "role": "billing_officer"}).json()
     token = inv["link"].rsplit("/", 1)[1]
     c = client()
     loc, sent = sso(c, "microsoft", {"sub": "m-1", "preferred_username": "Mia@Contoso.test", "name": "Mia Wong"},
                     invite=token)
+    ok("did+not+confirm" in loc and signed_in(c) is None, loc)
+    # ... with the app limited to one organisation's directory it can
+    os.environ["MS_TENANT"] = TENANT
+    loc, sent = sso(c, "microsoft", {"sub": "m-1", "preferred_username": "Mia@Contoso.test", "name": "Mia Wong"},
+                    invite=token)
     ok(loc == "/#/" and signed_in(c) == "mia", loc)
+    os.environ["MS_TENANT"] = "organizations"
     ok(c.get("/api/me").json()["full_name"] == "Mia Wong", "name from Microsoft")
     c6 = client()
     loc, _ = sso(c6, "microsoft", {"sub": "m-2", "email": "jane.doe@gmail.com"})

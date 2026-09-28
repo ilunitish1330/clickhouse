@@ -49,6 +49,19 @@ APP_DB = os.environ.get("APP_DB", "puc_app")  # users, audit, load timings
 UPLOADS = REPO / "data" / "uploads"
 SESSION_HOURS = 10
 COOKIE = "puc_session"
+
+
+def app_version() -> str:
+    """The commit this server runs, so "did the update arrive?" has an answer on the Users page."""
+    try:
+        out = subprocess.run(["git", "-C", str(REPO), "log", "-1", "--format=%h %cs"], capture_output=True,
+                             text=True, timeout=5)
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+VERSION = app_version()
 FLOW_COOKIE = "puc_sso"  # the few minutes between "Continue with Google" and coming back
 
 
@@ -277,6 +290,7 @@ def invite_public(row: dict) -> dict:
             "roles": [{"id": r, "title": ROLES[r].title} for r in role_ids(row["role"]) if r in ROLES],
             "role_title": combine(row["role"]).title if valid_roles(row["role"]) else row["role"],
             "island": ISLANDS.get(row["region_code"], ""), "expires_at": row["expires_at"],
+            "needs_code": auth.mail_configured(),
             "sso": [{"id": k, "title": p["title"]} for k, p in auth.sso_ready().items()]}
 
 
@@ -378,6 +392,27 @@ def invite_get(token: str):
     return invite_public(row)
 
 
+@app.post("/api/invite/{token}/code")
+def invite_code(token: str):
+    """E-mails a 6-digit code to the invited address. Only whoever reads that inbox can finish,
+    so a forwarded invitation does not work for anyone else."""
+    row = auth.find_token("invite", token)
+    if not row:
+        raise HTTPException(404, "This invitation link is not valid any more")
+    if not auth.mail_configured():
+        raise HTTPException(400, "E-mail is not set up, so no code is needed")
+    wait = auth.code_send_wait(row["id"])
+    if wait:
+        raise HTTPException(429, f"A code was sent just now. You can send another in {wait} seconds.")
+    code = auth.new_code(row)
+    try:
+        auth.send_mail(row["email"], *auth.code_mail(row["full_name"], code))
+    except (RuntimeError, ValueError):
+        raise HTTPException(502, "The code could not be e-mailed. Try again in a minute.")
+    audit(row["email"], "invite_code_sent")
+    return {"ok": True, "email": row["email"], "minutes": auth.CODE_MINUTES}
+
+
 def free_username(email: str) -> str:
     base = "".join(c for c in email.split("@")[0].lower() if c.isalnum() or c in "._-")[:30] or "user"
     name, n = base, 1
@@ -414,6 +449,11 @@ async def invite_accept(token: str, request: Request, response: Response):
         row = auth.find_token("invite", token)
         if not row:
             raise HTTPException(404, "This invitation link is not valid any more")
+        if auth.mail_configured():  # the code sent to the invited address, see invite_code
+            problem = auth.check_code(row, b.get("code", ""))
+            if problem:
+                audit(row["email"], "invite_code_wrong")
+                raise HTTPException(400, problem)
         if get_user(username):
             raise HTTPException(400, "This username is taken. Choose another one.")
         user = accept_invite(row, username, full_name, password=password)
@@ -516,6 +556,9 @@ def oidc_callback(provider: str, request: Request, code: str = "", state: str = 
                 return back_to_app(f"The invitation is for {row['email']} but that {title} account is "
                                    f"{who['email'] or 'without an address'}. Choose the right account, or "
                                    "create a username and password instead.")
+            if not who["email_trusted"]:  # the provider must vouch that the address is theirs
+                return back_to_app(f"{title} did not confirm that this account owns {row['email']}. "
+                                   "Create a username and password instead (a code is e-mailed to you).")
             try:
                 user = accept_invite(row, free_username(row["email"]), row["full_name"] or who["name"] or row["email"],
                                      **{field: who["sub"]})
@@ -898,7 +941,7 @@ def users(request: Request):
     for r in rows:
         r["locked"] = auth.locked_for(r["username"]) > 0
         r["roles"] = role_ids(r["role"])
-    return {"users": rows,
+    return {"users": rows, "version": VERSION,
             "mail": {"configured": auth.mail_configured(), "base_url": auth.base_url(),
                      "from": os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER", ""),
                      "sso": [p["title"] for p in auth.sso_ready().values()],

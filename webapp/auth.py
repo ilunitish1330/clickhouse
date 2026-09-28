@@ -79,6 +79,9 @@ def init_store() -> None:
             created_at DateTime, expires_at DateTime, status LowCardinality(String), used_by String,
             sent UInt8, updated_at DateTime64(3) DEFAULT now64(3))
           ENGINE = ReplacingMergeTree(updated_at) ORDER BY id""")
+    # the e-mailed code that ties an invitation to its address (see new_code)
+    for col in ("code_hash String", "code_expires UInt32", "code_tries UInt8"):
+        ch(f"ALTER TABLE {db}.tokens ADD COLUMN IF NOT EXISTS {col}")
 
 
 def token_hash(token: str) -> str:
@@ -87,11 +90,12 @@ def token_hash(token: str) -> str:
 
 def put_token(row: dict) -> None:
     cols = ["id", "kind", "token_hash", "email", "full_name", "role", "region_code", "username", "created_by",
-            "created_at", "expires_at", "status", "used_by", "sent"]
+            "created_at", "expires_at", "status", "used_by", "sent", "code_hash", "code_expires", "code_tries"]
+    ints = ("region_code", "sent", "code_expires", "code_tries")
     vals = []
     for c in cols:
-        v = row.get(c, 0 if c in ("region_code", "sent") else "")
-        vals.append(str(int(v)) if c in ("region_code", "sent") else
+        v = row.get(c, 0 if c in ints else "")
+        vals.append(str(int(v)) if c in ints else
                     f"toDateTime({int(v)})" if c in ("created_at", "expires_at") else esc(v))
     ch(f"INSERT INTO {app_db()}.tokens ({', '.join(cols)}) VALUES ({', '.join(vals)})")
 
@@ -101,7 +105,8 @@ def _token_rows(where: str) -> list[dict]:
              f"FROM {app_db()}.tokens FINAL WHERE {where} ORDER BY created_at DESC")
     for r in rows:
         r["created_at"], r["expires_at"] = int(r.pop("created_ts")), int(r.pop("expires_ts"))
-        r["region_code"], r["sent"] = int(r["region_code"]), int(r["sent"])
+        for c in ("region_code", "sent", "code_expires", "code_tries"):
+            r[c] = int(r.get(c) or 0)
         r.pop("updated_at", None)
         if r["status"] == "pending" and r["expires_at"] < time.time():
             r["status"] = "expired"
@@ -126,6 +131,58 @@ def find_token(kind: str, token: str) -> dict | None:
         return None
     rows = _token_rows(f"kind = {esc(kind)} AND token_hash = {esc(token_hash(token))}")
     return rows[0] if rows and rows[0]["status"] == "pending" else None
+
+
+# --- the invitation code ------------------------------------------------------------
+# An invitation link alone does not make an account: the person must also type a
+# 6-digit code that is e-mailed to the invited address when they ask for it. A
+# forwarded link is useless without access to that inbox.
+
+CODE_MINUTES = 15
+CODE_TRIES = 5
+_code_sends: dict[str, list[float]] = {}
+
+
+def code_send_wait(invite_id: str) -> int:
+    """Seconds before another code may be sent for this invitation (30 s apart, 5 an hour)."""
+    with _fails_lock:
+        now = time.time()
+        recent = [t for t in _code_sends.get(invite_id, []) if now - t < 3600]
+        _code_sends[invite_id] = recent
+        if len(recent) >= 5:
+            return int(3600 - (now - recent[0])) + 1
+        return int(30 - (now - recent[-1])) + 1 if recent and now - recent[-1] < 30 else 0
+
+
+def _code_hash(row: dict, code: str) -> str:
+    return hashlib.sha256(f"{row['token_hash']}:{code}".encode()).hexdigest()
+
+
+def new_code(row: dict) -> str:
+    """A fresh code for this invitation (the previous one stops working)."""
+    code = f"{secrets.randbelow(10 ** 6):06d}"
+    with _fails_lock:
+        _code_sends.setdefault(row["id"], []).append(time.time())
+    put_token({**row, "code_hash": _code_hash(row, code), "code_expires": int(time.time()) + CODE_MINUTES * 60,
+               "code_tries": 0})
+    return code
+
+
+def check_code(row: dict, code: str) -> str:
+    """"" when the code is right, else what to tell the person. Wrong codes are counted."""
+    code = re.sub(r"\s", "", str(code or ""))
+    if not row.get("code_hash"):
+        return "First send the code to your e-mail address, then type it here."
+    if row["code_tries"] >= CODE_TRIES:
+        return "Too many wrong codes. Send a new code and use that one."
+    if row["code_expires"] < time.time():
+        return "The code has expired. Send a new code."
+    if not re.fullmatch(r"\d{6}", code) or not hmac.compare_digest(_code_hash(row, code), row["code_hash"]):
+        put_token({**row, "code_tries": row["code_tries"] + 1})
+        left = CODE_TRIES - row["code_tries"] - 1
+        return f"That code is not right. {left} tr{'y' if left == 1 else 'ies'} left." if left else \
+            "Too many wrong codes. Send a new code and use that one."
+    return ""
 
 
 def close_token(row: dict, status: str, used_by: str = "") -> None:
@@ -256,14 +313,37 @@ def invite_mail(to: str, name: str, role_title: str, island: str, by: str, link:
     where = f"{role_title}" + (f", {island}" if island and island != "All islands" else "")
     text = (f"{hello}\n\n{by} invited you to PUC Analytics as {where}.\n\n"
             f"Open this link to create your account (valid {INVITE_DAYS} days, once):\n{link}\n\n"
+            f"The link works only for {to}: to finish, you type a code that is sent to this address.\n\n"
             "You can choose a username and password, or continue with your Google or Microsoft account "
             f"if it uses this address ({to}).\n\nIf you did not expect this, ignore this e-mail.\n")
     html = _mail_html("You are invited", [escape(hello), f"<b>{escape(by)}</b> invited you to PUC Analytics as "
                       f"<b>{escape(where)}</b>.",
                       "Create your account with a username and password, or continue with your Google or "
-                      f"Microsoft account if it uses <b>{escape(to)}</b>."],
+                      f"Microsoft account if it uses <b>{escape(to)}</b>.",
+                      f"The link works only for <b>{escape(to)}</b>: to finish, you type a code sent to this address, "
+                      "so forwarding the e-mail to someone else does not give them an account."],
                       "Accept the invitation", link,
                       f"The link works once and expires in {INVITE_DAYS} days. If you did not expect this, ignore this e-mail.")
+    return subject, text, html
+
+
+def code_mail(name: str, code: str) -> tuple[str, str, str]:
+    subject = f"{code} is your PUC Analytics code"
+    hello = f"Hello {name}," if name else "Hello,"
+    text = (f"{hello}\n\nYour code to create your PUC Analytics account is:\n\n    {code}\n\n"
+            f"It works for {CODE_MINUTES} minutes. Do not share it: with the invitation link it opens an account "
+            "in your name.\n\nIf you did not ask for it, ignore this e-mail.\n")
+    body = "".join(f'<p style="margin:0 0 14px;color:#334155;line-height:1.55">{line}</p>' for line in [
+        escape(hello), "Your code to create your PUC Analytics account is:"])
+    html = f"""<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:Segoe UI,Arial,sans-serif">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:32px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:12px;overflow:hidden">
+<tr><td style="background:#123a6b;padding:20px 28px;color:#ffffff;font-size:17px;font-weight:600">PUC Analytics
+<div style="font-size:12px;font-weight:400;opacity:.75">Public Utilities Corporation</div></td></tr>
+<tr><td style="padding:28px">{body}
+<p style="margin:8px 0 22px;font-size:32px;font-weight:700;letter-spacing:8px;color:#0f172a;font-family:Consolas,monospace">{code}</p>
+<p style="margin:0;color:#64748b;font-size:12px">It works for {CODE_MINUTES} minutes. Do not share it: with the invitation
+link it opens an account in your name. If you did not ask for it, ignore this e-mail.</p></td></tr></table></td></tr></table></body></html>"""
     return subject, text, html
 
 

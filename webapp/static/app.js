@@ -119,11 +119,33 @@
       <label class="field"><span>Username</span><input name="username" value="${esc(suggest)}" required pattern="[A-Za-z0-9._\\-]{1,40}" autocomplete="username"></label>
       <label class="field"><span>Password</span><input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
       <label class="field"><span>Repeat password</span><input name="again" type="password" minlength="8" required autocomplete="new-password"></label>
+      ${d.needs_code ? `<div class="verify"><div class="verify-head">${icon("lock")}<div><b>Confirm it is your e-mail</b>
+        <small>This invitation works only for <b>${esc(d.email)}</b>. We e-mail a 6-digit code there; type it below.</small></div></div>
+        <div class="verify-row"><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="6-digit code" aria-label="Code from the e-mail" required>
+        <button type="button" class="btn" id="send-code">${icon("send")}Send code</button></div>
+        <div class="verify-msg" id="code-msg"></div></div>` : ""}
       <button class="btn primary block" type="submit">Create account and sign in</button>
       <p class="foot">Already have an account? <a href="#/" class="link">Sign in</a></p></form>`;
+    const sendBtn = box.querySelector("#send-code");
+    if (sendBtn) sendBtn.onclick = async () => {
+      const msg = box.querySelector("#code-msg");
+      sendBtn.disabled = true;
+      try {
+        const r = await api(`/api/invite/${encodeURIComponent(token)}/code`, { method: "POST" });
+        box.querySelector(".msg").innerHTML = "";
+        msg.className = "verify-msg ok";
+        msg.textContent = `Code sent to ${r.email}. It works for ${r.minutes} minutes; check the spam folder too.`;
+        box.querySelector("[name=code]").focus();
+        let left = 30;  // the server allows another code after 30 seconds
+        const tick = setInterval(() => {
+          sendBtn.innerHTML = `${icon("send")}Send again${--left > 0 ? ` (${left})` : ""}`;
+          if (left <= 0) { clearInterval(tick); sendBtn.disabled = false; }
+        }, 1000);
+      } catch (err) { msg.className = "verify-msg bad"; msg.textContent = err.message; sendBtn.disabled = false; }
+    };
     onForm(box.querySelector("form"), "Creating…", async (f) => {
       if (f.get("password") !== f.get("again")) throw new Error("The two passwords differ.");
-      await api(`/api/invite/${encodeURIComponent(token)}/accept`, { method: "POST", body: JSON.stringify({ username: f.get("username"), full_name: f.get("full_name"), password: f.get("password") }) });
+      await api(`/api/invite/${encodeURIComponent(token)}/accept`, { method: "POST", body: JSON.stringify({ username: f.get("username"), full_name: f.get("full_name"), password: f.get("password"), code: f.get("code") || "" }) });
       history.replaceState(null, "", location.pathname + "#/"); await boot();
     });
   }
@@ -1283,7 +1305,7 @@
         <td class="n">${i.status === "pending" || i.status === "expired" ? `<button class="btn small" data-resend="${i.id}" title="A new link; the old one stops working">${icon("send")}${i.status === "expired" ? "Send again" : "Resend"}</button>` : ""}
           ${i.status === "pending" ? `<button class="btn small" data-revoke="${i.id}">${icon("x")}Withdraw</button>` : ""}</td></tr>`).join("")}
       </tbody></table></div>` : `<p class="empty-note">No invitations yet. Use <b>Invite by e-mail</b> to let someone create their own account.</p>`}</section>
-      <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>Roles</h3><div class="meta">What each role sees · defined in webapp/roles.py</div></div></div>
+      <section class="card wide" style="margin-top:16px"><div class="card-head"><div><h3>Roles</h3><div class="meta">What each role sees · defined in webapp/roles.py${d.version ? ` · app version ${esc(d.version)}` : ""}</div></div></div>
       <div class="role-cards">${d.roles.map((r) => `<div class="role-card"><span class="role-badge" style="--rc:${roleColor(r.id)}">${esc(r.title)}</span><p>${esc(r.description)}</p></div>`).join("")}</div></section>`;
     const again = () => usersPage();
     main.querySelector("#add").onclick = () => userModal(null, d, again, "create");
@@ -1315,7 +1337,7 @@
     modal(`<div class="done-icon ${r.sent ? "" : "warn"}">${icon(r.sent ? "mail" : "link")}</div>
       <h2>${r.sent ? "Invitation sent" : "Invitation ready"}</h2>
       <p class="sub">${r.sent ? `An e-mail with the link is on its way to <b>${esc(r.email)}</b>.` : `${esc(r.error)} Send it to <b>${esc(r.email)}</b>.`}</p>
-      <label class="field"><span>Invitation link · works once, for 7 days</span><div class="copy-row"><input id="ilink" value="${esc(r.link)}" readonly><button class="btn" id="copy" type="button">${icon("copy")}Copy</button></div></label>
+      <label class="field"><span>Invitation link · works once, for 7 days${r.sent ? `, only with a code sent to ${esc(r.email)}` : ""}</span><div class="copy-row"><input id="ilink" value="${esc(r.link)}" readonly><button class="btn" id="copy" type="button">${icon("copy")}Copy</button></div></label>
       <div class="actions"><button class="btn primary" id="ok">Done</button></div>`, (m, close) => {
       m.querySelector("#ok").onclick = () => { close(); done(); };
       m.querySelector("#copy").onclick = async () => {

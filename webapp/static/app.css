@@ -959,3 +959,19 @@ td.n .btn + .btn { margin-left: 6px; }
 .badges { display: flex; flex-wrap: wrap; gap: 4px; }
 .modal:has(.role-pick) { max-width: 620px; }
 @media (max-width: 560px) { .role-pick { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------------------- invitation code */
+.verify { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin: 4px 0 16px; background: var(--surface-2); }
+.verify-head { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+.verify-head > svg.i { flex: none; color: var(--brand-ink); margin-top: 2px; }
+.verify-head > div > b { display: block; font-size: 14px; }
+.verify-head small { color: var(--ink-2); font-size: 12.5px; line-height: 1.45; }
+.verify-row { display: flex; gap: 8px; }
+.verify-row input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--ink); font: inherit; font-size: 18px; letter-spacing: 4px; font-variant-numeric: tabular-nums; }
+.verify-row input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-wash); }
+.verify-row .btn { white-space: nowrap; }
+.verify-msg { font-size: 12.5px; margin-top: 8px; }
+.verify-msg:empty { display: none; }
+.verify-msg.ok { color: var(--good-ink); }
+.verify-msg.bad { color: var(--critical); }
