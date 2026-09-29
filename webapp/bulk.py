@@ -136,13 +136,16 @@ def preview(batch_id: str, spec: dict, sample: int = 20) -> dict:
     plan = _plan(batch_id, spec)
     targets = [s["field"] for s in spec["sets"]]
     bads = ", ".join(f"countIf(bad_{i}) AS bad_{i}" for i in range(len(targets)))
-    fin = lambda c: f"sumIf(toFloat64OrZero({c}), isFinite(toFloat64OrZero({c})))"  # 1/0 must not break the sum
+    # amounts as the dashboards count them: a PV line repeats its connection's charge and adds
+    # nothing to revenue or consumption (ub_views.sql), so it is left out here too
+    fin = lambda c, p: (f"sumIf(toFloat64OrZero({p}_{c}), isFinite(toFloat64OrZero({p}_{c})) "
+                        f"AND {p}_ADDITIONALITEMSDESCRIPTION != 'PV')")  # 1/0 must not break the sum
     st = q(f"SELECT count() AS matched, countIf(changed) AS changed, "
-           f"{fin('o_AMOUNT')} AS amount_before, {fin('f_AMOUNT')} AS amount_after, "
-           f"{fin('o_QUANTITY')} AS quantity_before, {fin('f_QUANTITY')} AS quantity_after"
+           f"{fin('AMOUNT', 'o')} AS amount_before, {fin('AMOUNT', 'f')} AS amount_after, "
+           f"{fin('QUANTITY', 'o')} AS quantity_before, {fin('QUANTITY', 'f')} AS quantity_after"
            f"{', ' + bads if bads else ''} FROM ({plan})")[0]
-    total = q(f"SELECT count() AS rows, sum(toFloat64OrZero(AMOUNT)) AS amount FROM {_merged(batch_id)} AS m "
-              f"WHERE m.pending != 'delete'")[0]
+    total = q(f"SELECT count() AS rows, sumIf(toFloat64OrZero(AMOUNT), ADDITIONALITEMSDESCRIPTION != 'PV') AS amount "
+              f"FROM {_merged(batch_id)} AS m WHERE m.pending != 'delete'")[0]
     matched, before, after = int(st["matched"]), float(st["amount_before"] or 0), float(st["amount_after"] or 0)
     act = spec["action"]
     affected = int(st["changed"]) if act in ("update", "add_column") else matched

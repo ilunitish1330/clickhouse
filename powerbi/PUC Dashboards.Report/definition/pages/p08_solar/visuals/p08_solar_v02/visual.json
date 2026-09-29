@@ -23,11 +23,11 @@
                       "Entity": "Billing"
                     }
                   },
-                  "Property": "PV Customers"
+                  "Property": "PV Meter kWh"
                 }
               },
-              "queryRef": "Billing.PV Customers",
-              "nativeQueryRef": "PV Customers"
+              "queryRef": "Billing.PV Meter kWh",
+              "nativeQueryRef": "PV Meter kWh"
             }
           ]
         }

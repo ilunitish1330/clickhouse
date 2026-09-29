@@ -41,11 +41,11 @@
                       "Entity": "Billing"
                     }
                   },
-                  "Property": "PV Billing"
+                  "Property": "PV Meter kWh"
                 }
               },
-              "queryRef": "Billing.PV Billing",
-              "nativeQueryRef": "PV Billing"
+              "queryRef": "Billing.PV Meter kWh",
+              "nativeQueryRef": "PV Meter kWh"
             }
           ]
         }
@@ -84,7 +84,7 @@
             "text": {
               "expr": {
                 "Literal": {
-                  "Value": "'PV billing by period'"
+                  "Value": "'PV meter kWh by period'"
                 }
               }
             }

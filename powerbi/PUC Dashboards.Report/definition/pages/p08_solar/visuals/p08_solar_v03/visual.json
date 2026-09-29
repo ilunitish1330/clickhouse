@@ -23,11 +23,11 @@
                       "Entity": "Billing"
                     }
                   },
-                  "Property": "PV Connections"
+                  "Property": "PV Customers"
                 }
               },
-              "queryRef": "Billing.PV Connections",
-              "nativeQueryRef": "PV Connections"
+              "queryRef": "Billing.PV Customers",
+              "nativeQueryRef": "PV Customers"
             }
           ]
         }

@@ -224,7 +224,7 @@ table Billing
 		displayFolder: Solar PV
 		lineageTag: 4edc6c36-cc74-5838-aeec-244828569427
 
-	measure 'PV Billing' = CALCULATE([Total Revenue], ChargeType[is_pv] = 1)
+	measure 'PV Billing' = CALCULATE([Total Revenue], Billing[pv_connection] = 1)
 		formatString: #,0
 		displayFolder: Solar PV
 		lineageTag: 8210ead2-0d21-5c10-b96e-960c6a7fa56f
@@ -233,6 +233,11 @@ table Billing
 		formatString: 0.0%
 		displayFolder: Solar PV
 		lineageTag: ddbfe428-75d6-5e22-81a4-885c5398bba3
+
+	measure 'PV Meter kWh' = SUM(Billing[pv_kwh])
+		formatString: #,0
+		displayFolder: Solar PV
+		lineageTag: 4c8aa2a7-c9d1-5ac2-a80c-5cf574a73e8b
 
 	column period
 		dataType: dateTime
@@ -370,6 +375,15 @@ table Billing
 
 		annotation SummarizationSetBy = Automatic
 
+	column pv_kwh
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 7b9c8155-b4ee-5fe8-a53c-75129aa667cb
+		summarizeBy: sum
+		sourceColumn: pv_kwh
+
+		annotation SummarizationSetBy = Automatic
+
 	column consumption_qty
 		dataType: double
 		formatString: #,0.00
@@ -429,11 +443,11 @@ table Billing
 				let
 				    Source = Csv.Document(
 				        Web.Contents(ClickHouseUrl, [
-				            Query = [query = "SELECT period, utility_code, region_code, tariff_code, charge_key, customer_id, connection_id, meter_id, invoice_id, invoice_prefix, water_source, water_node, pv_connection, unit, amount, quantity, consumption_qty, consumption_amount, adjustment_amount, adjustment_qty, credit_amount, has_meter FROM ub.pbi_billing FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
+				            Query = [query = "SELECT period, utility_code, region_code, tariff_code, charge_key, customer_id, connection_id, meter_id, invoice_id, invoice_prefix, water_source, water_node, pv_connection, unit, amount, quantity, pv_kwh, consumption_qty, consumption_amount, adjustment_amount, adjustment_qty, credit_amount, has_meter FROM ub.pbi_billing FORMAT CSVWithNames", user = ClickHouseUser, password = ClickHousePassword],
 				            Timeout = #duration(0, 0, 30, 0)]),
 				        [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
 				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
-				    Typed = Table.TransformColumnTypes(Promoted, {{"period", type date}, {"utility_code", Int64.Type}, {"region_code", Int64.Type}, {"tariff_code", type text}, {"charge_key", type text}, {"customer_id", type text}, {"connection_id", type text}, {"meter_id", type text}, {"invoice_id", type text}, {"invoice_prefix", type text}, {"water_source", type text}, {"water_node", type text}, {"pv_connection", Int64.Type}, {"unit", type text}, {"amount", type number}, {"quantity", type number}, {"consumption_qty", type number}, {"consumption_amount", type number}, {"adjustment_amount", type number}, {"adjustment_qty", type number}, {"credit_amount", type number}, {"has_meter", Int64.Type}}, "en-US")
+				    Typed = Table.TransformColumnTypes(Promoted, {{"period", type date}, {"utility_code", Int64.Type}, {"region_code", Int64.Type}, {"tariff_code", type text}, {"charge_key", type text}, {"customer_id", type text}, {"connection_id", type text}, {"meter_id", type text}, {"invoice_id", type text}, {"invoice_prefix", type text}, {"water_source", type text}, {"water_node", type text}, {"pv_connection", Int64.Type}, {"unit", type text}, {"amount", type number}, {"quantity", type number}, {"pv_kwh", type number}, {"consumption_qty", type number}, {"consumption_amount", type number}, {"adjustment_amount", type number}, {"adjustment_qty", type number}, {"credit_amount", type number}, {"has_meter", Int64.Type}}, "en-US")
 				in
 				    Typed
 

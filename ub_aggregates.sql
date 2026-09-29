@@ -116,8 +116,7 @@ SELECT period_month, connection_id, utility_code,
        max(pv_connection)                                 AS pv_connection,
        toDecimal64(sum(amount), 4)                        AS amount,
        toDecimal64(sumIf(quantity, charge_type = 1), 4)   AS consumption_qty,
-       toDecimal64(sumIf(quantity, charge_type = 1 AND is_pv = 1), 4) AS pv_qty,
-       toDecimal64(sumIf(amount, is_pv = 1), 4)           AS pv_amount
+       toDecimal64(sum(pv_kwh), 4)                        AS pv_kwh  -- PV meter kWh (ub_views.sql)
 FROM ub.fact_billing
 GROUP BY period_month, connection_id, utility_code
 SETTINGS prefer_column_name_to_alias = 1;
@@ -149,7 +148,7 @@ SELECT period_month AS period, utility_code, region_code, tariff_code, charge_ke
        customer_id, connection_id, meter_id, invoice_id, invoice_prefix,
        water_source, water_node, pv_connection,
        if(utility_code = 1, 'kWh', 'm3')      AS unit,
-       amount, quantity,
+       amount, quantity, pv_kwh,
        if(charge_type = 1, quantity, 0)      AS consumption_qty,
        if(charge_type = 1, amount, 0)        AS consumption_amount,
        if(charge_type = 2, amount, 0)        AS adjustment_amount,

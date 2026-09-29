@@ -44,8 +44,15 @@ METRICS = {
     "no_meter_connections": ("Connections without a meter", "b", "uniqExactIf(connection_id, has_meter = 0)", "count"),
     "pv_customers": ("PV customers", "b", "uniqExactIf(customer_id, pv_connection = 1)", "count"),
     "pv_connections": ("PV connections", "b", "uniqExactIf(connection_id, pv_connection = 1)", "count"),
-    "pv_billing": ("PV billing", "b", "sumIf(amount, is_pv = 1)", "money"),
-    "pv_share": ("PV share of revenue", "b", "sumIf(amount, is_pv = 1) / nullIf(sum(amount), 0)", "pct"),
+    # PV: pv_connection marks every line of a PV customer's connection; a PV line itself carries no
+    # money and no consumption, only the PV meter's kWh (pv_kwh) -- see ub_views.sql
+    "pv_billing": ("Billed to PV customers", "b", "sumIf(amount, pv_connection = 1)", "money"),
+    "pv_share": ("PV customers' share of revenue", "b",
+                 "sumIf(amount, pv_connection = 1) / nullIf(sum(amount), 0)", "pct"),
+    "pv_kwh": ("PV meter energy", "b", "sum(pv_kwh)", "qty"),
+    "pv_meters": ("PV meters", "b", "uniqExactIf(meter_id, is_pv = 1 AND meter_id != '')", "count"),
+    "pv_kwh_per_conn": ("PV kWh per PV connection", "b",
+                        "sum(pv_kwh) / nullIf(uniqExactIf(connection_id, is_pv = 1), 0)", "qty"),
     "cp_revenue": ("Revenue", "cp", "sum(amount)", "money"),
     "cp_customers": ("Customers", "cp", "uniqExact(customer_id)", "count"),
     "cp_consumption": ("Consumption", "cp", f"if({ONE_UNIT_U}, sum(consumption_qty), NULL)", "qty"),
@@ -167,12 +174,15 @@ PAGES = {
         ]},
     "solar": {
         "title": "Solar PV", "icon": "sun", "utility": 1,
-        "subtitle": "Customers with photovoltaic installations",
-        "tiles": [tile("pv_customers", True), tile("pv_connections"), tile("pv_billing", True), tile("pv_share")],
+        "subtitle": "Customers with photovoltaic installations: their PV meters' kWh and their bills",
+        "tiles": [tile("pv_kwh", True), tile("pv_customers", True), tile("pv_meters"), tile("pv_kwh_per_conn"),
+                  tile("pv_billing"), tile("pv_share")],
         "charts": [
-            chart("col", "Average kWh per connection: PV vs no PV", "pv_label", ["cn_avg_use"], sort="dim"),
-            chart("bar", "PV billing by island", "region_name", ["pv_billing"]),
-            chart("col", "PV billing by period", "period_label", ["pv_billing"], sort="dim", all_periods=True),
+            chart("bar", "PV meter kWh by island", "region_name", ["pv_kwh"]),
+            chart("col", "PV meter kWh by period", "period_label", ["pv_kwh"], sort="dim", all_periods=True),
+            chart("col", "Average grid kWh per connection: PV vs no PV", "pv_label", ["cn_avg_use"], sort="dim"),
+            chart("bar", "Billed to PV customers by island", "region_name", ["pv_billing"]),
+            chart("table", "PV meter kWh by tariff", "tariff_desc", ["pv_kwh", "pv_customers", "pv_billing"], limit=20),
             chart("table", "PV and non-PV connections", "pv_label", ["cn_connections", "cn_avg_use"]),
         ]},
     "network": {

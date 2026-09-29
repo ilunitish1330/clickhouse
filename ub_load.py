@@ -26,6 +26,7 @@ is used as is. Excel-style d/m/y dates are ambiguous -- prefer yyyy-mm-dd.
 """
 import csv
 import io
+import re
 import sys
 import time
 import zipfile
@@ -137,15 +138,20 @@ def ensure_schema() -> None:
     engine = ch("SELECT engine FROM system.tables WHERE database = 'ub' AND name = 'fact_billing' FORMAT TSV").strip()
     if engine and engine != "View":
         migrate()
-    ax_load.run_sql_file(HERE / "ub_views.sql")
-    # fact_lines holds v_lines' columns: if v_lines changed (a new version of the app), rebuild it whole
+    # fact_lines holds v_lines' columns: if v_lines changed (a new version of the app), rebuild it
+    # whole. v_lines goes first and the comparison before the other views, which read fact_lines.
+    views = HERE / "ub_views.sql"
+    text = "\n".join(l for l in views.read_text().splitlines() if not l.lstrip().startswith("--"))
+    ch(next(st for st in re.split(r";\s*$", text, flags=re.M) if "VIEW ub.v_lines" in st))
     cols = lambda t: ch(f"SELECT name, type FROM system.columns WHERE database = 'ub' AND table = '{t}' "
                         "ORDER BY position FORMAT TSV")
-    if cols("fact_lines") != cols("v_lines"):
-        print("the billing lines gained columns: rebuilding them ...", flush=True)
+    stale = cols("fact_lines") and cols("fact_lines") != cols("v_lines")
+    if stale:
+        print("the billing lines changed: rebuilding them ...", flush=True)
         ch("DROP TABLE ub.fact_lines")
-        ax_load.run_sql_file(HERE / "ub_views.sql")  # recreates fact_lines empty-structured and fills it
-        ch("TRUNCATE TABLE ub.fact_lines")
+    ax_load.run_sql_file(views)  # (re)creates fact_lines from v_lines when it is missing
+    if stale:
+        ch("TRUNCATE TABLE ub.fact_lines")  # every batch is built again just below
     ub_custom.refresh_view()
     # batches with no status yet (an older install) start as uploaded: Draft, revision 1
     ch("INSERT INTO ub.batch_events (batch_id, status, revision, changed_by, note) "
@@ -193,7 +199,8 @@ def migrate() -> None:
         ch(BATCH_MONTHS.format(batches=sql_list(batches)))
     old = ch("SELECT batch_id, period_month, count(), sum(amount) FROM ub.fact_billing_old "
              "GROUP BY 1, 2 ORDER BY 1, 2 FORMAT TSV")
-    new = ch("SELECT batch_id, period, count(), sum(amount) FROM ub.v_lines GROUP BY 1, 2 ORDER BY 1, 2 FORMAT TSV")
+    # line_amount: as in the file (amount leaves out the PV lines' repeated charges, see ub_views.sql)
+    new = ch("SELECT batch_id, period, count(), sum(line_amount) FROM ub.v_lines GROUP BY 1, 2 ORDER BY 1, 2 FORMAT TSV")
     if old != new:
         sys.exit("migration check failed -- the old lines are kept in ub.fact_billing_old\n"
                  f"before:\n{old}\nafter:\n{new}")
@@ -293,13 +300,22 @@ def load(paths: list[str]) -> None:
                f"SELECT {fname}, batch_id, count(), sum(amount) FROM ub.v_lines "
                f"WHERE batch_id IN ({sql_list(batches)}) GROUP BY batch_id")
             src = ch("SELECT count(), round(sum(toFloat64OrZero(AMOUNT)), 2) FROM ub.raw_load FORMAT TSV").split()
-            dst = ch(f"SELECT count(), round(sum(toFloat64(amount)), 2) FROM ub.v_lines "
+            dst = ch(f"SELECT count(), round(sum(toFloat64(line_amount)), 2) FROM ub.v_lines "  # as in the file
                      f"WHERE batch_id IN ({sql_list(batches)}) FORMAT TSV").split()
             ch("TRUNCATE TABLE ub.raw_load")
             print(f"{name}: {n:,} rows read, {int(dst[0]):,} stored, amount {float(dst[1]):,.2f} "
                   f"(file says {float(src[1]):,.2f}), {len(batches)} batch(es), {time.time() - t0:.0f}s")
             if src[0] != dst[0]:
                 print(f"  WARNING: {src[0]} staged vs {dst[0]} stored")
+            # PV lines are counted as repeats of their connection's charge (ub_views.sql): say so if
+            # an export ever breaks that pattern, instead of silently leaving money out
+            odd = ch("SELECT count() FROM (SELECT connection_id, sumIf(line_amount, is_pv = 1) AS p, "
+                     "sumIf(line_amount, charge_type = 1 AND is_pv = 0) AS c FROM ub.v_lines "
+                     f"WHERE batch_id IN ({sql_list(batches)}) AND utility_code = 1 GROUP BY connection_id "
+                     "HAVING countIf(is_pv = 1) > 0 AND abs(p - c) >= 0.01) FORMAT TSV").strip()
+            if odd != "0":
+                print(f"  WARNING: {odd} PV connection(s) whose PV line does not repeat their consumption charge: "
+                      "their PV amount is left out of revenue; check these bills")
             for b in batches:  # a fresh upload is live at once, as a Draft waiting for review
                 ch(f"DELETE FROM ub.raw_pending WHERE batch_id = {sql_list([b])}")
                 set_status(b, "draft", status_of(b)[1] + 1, "upload", f"uploaded from {name}")

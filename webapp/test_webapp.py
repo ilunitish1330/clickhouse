@@ -41,6 +41,23 @@ def main() -> None:
     assert anon.get("/api/page/executive").status_code == 401
     assert anon.post("/api/login", json={"username": "ceo", "password": "wrong"}).status_code == 401
 
+    # PV lines (billing item "PV") repeat their connection's consumption charge and carry the PV
+    # meter's kWh: no revenue, no consumption, PV energy kept apart, reversals subtracting
+    pv = server.q("SELECT countIf(is_pv = 1 AND (amount != 0 OR quantity != 0)) AS leaks, "
+                  "countIf(is_pv = 1 AND value_type = 10 AND pv_kwh > 0) AS bad_reversals, "
+                  "countIf(is_pv = 0 AND pv_kwh != 0) AS stray_kwh, "
+                  "sum(line_amount) - sum(amount) - sumIf(line_amount, is_pv = 1) AS gap, "
+                  "uniqExactIf(connection_id, is_pv = 1) AS pv_conns, "
+                  "uniqExactIf(connection_id, pv_connection = 1 AND utility_code = 1) AS flagged "
+                  "FROM ub.fact_lines")[0]
+    assert int(pv["leaks"]) == 0 and int(pv["bad_reversals"]) == 0 and int(pv["stray_kwh"]) == 0, pv
+    assert abs(float(pv["gap"])) < 0.01, "revenue = the file's amounts less the PV repeats, nothing else"
+    assert int(pv["pv_conns"]) == int(pv["flagged"]) > 0, "every line of a PV customer's connection is flagged"
+    dup = server.q("SELECT countIf(abs(p - c) >= 0.01) AS differ FROM (SELECT connection_id, period, "
+                   "sumIf(line_amount, is_pv = 1) AS p, sumIf(line_amount, charge_type = 1 AND is_pv = 0) AS c "
+                   "FROM ub.fact_lines WHERE utility_code = 1 GROUP BY 1, 2 HAVING countIf(is_pv = 1) > 0)")[0]
+    assert int(dup["differ"]) == 0, "a PV line no longer repeats its connection's charge: review ub_views.sql"
+
     ceo = login("ceo")
     me = ceo.get("/api/me").json()
     assert me["must_change"] and len(me["pages"]) == 10 and not me["can_load"]

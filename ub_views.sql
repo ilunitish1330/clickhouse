@@ -46,10 +46,22 @@ SELECT
     if(r.INVOICEORIGINDESCRIPTION = '', concat('code_', r.INVOICEORIGIN), r.INVOICEORIGINDESCRIPTION) AS origin_desc,
     toUInt8OrZero(r.FREETEXTINVOICE) AS is_free_text,
     toUInt8OrZero(r.CONNECTIONMEMBERTYPE) AS member_type,
-    toUInt8OrZero(r.PVINDICATION) AS pv_connection,
+    -- A PV customer's connection: the export flags only its PV line, so the flag is spread to
+    -- every line of that connection in the batch (PV billing = the bills of PV customers).
+    -- Every reader of this view filters by batch_id, so the window sees whole connections.
+    max(toUInt8OrZero(r.PVINDICATION)) OVER (PARTITION BY r.batch_id, r.CONNECTIONID) AS pv_connection,
     r.METERWATERNODE AS water_node, r.METERWATERSOURCE AS water_source,
-    toDecimal64OrZero(toString(round(toFloat64OrZero(r.AMOUNT), 4)), 4) AS amount,
-    toDecimal64OrZero(toString(round(toFloat64OrZero(r.QUANTITY), 4)), 4) AS quantity,  -- kWh or m3: never summed across utilities
+    toDecimal64OrZero(toString(round(toFloat64OrZero(r.AMOUNT), 4)), 4) AS line_amount,      -- as in the file
+    toDecimal64OrZero(toString(round(toFloat64OrZero(r.QUANTITY), 4)), 4) AS line_quantity,  -- as in the file
+    -- A PV line (billing item "PV") is not a charge of its own: it repeats, to the cent, the
+    -- consumption charge on the same connection's bill (true for every PV connection in the
+    -- data), and its quantity is the PV meter's kWh, not energy sold. So it adds nothing to
+    -- revenue or consumption; its kWh is kept apart as pv_kwh. Its reversals (value type 10,
+    -- credit notes) keep the kWh positive in the export, unlike every other reversal: here
+    -- they subtract, so a cancelled and re-issued PV bill counts once.
+    if(is_pv = 1, toDecimal64(0, 4), line_amount) AS amount,
+    if(is_pv = 1, toDecimal64(0, 4), line_quantity) AS quantity,  -- kWh or m3: never summed across utilities
+    if(is_pv = 1, if(value_type = 10, -abs(line_quantity), line_quantity), toDecimal64(0, 4)) AS pv_kwh,
     concat(r.ADDITIONALITEMSTYPE, '|', toString(is_pv), '|', r.INVOICEVALUETYPE, '|', r.INVOICEORIGIN, '|',
            toString(is_free_text)) AS charge_key,
     if(r.utility_code = 1, 'kWh', 'm3') AS unit,
@@ -78,7 +90,7 @@ SELECT batch_id, line_no, period AS period_month, stat_date, invoice_date, date_
        region_code, region_name, tariff_code, tariff_desc, category_id, category_desc,
        sector_code, sector_desc, charge_type, charge_desc, is_pv, value_type, value_desc,
        invoice_origin, origin_desc, is_free_text, member_type, pv_connection, water_node,
-       water_source, amount, quantity, charge_key
+       water_source, amount, quantity, charge_key, pv_kwh
 FROM ub.fact_lines;
 
 -- The billing periods present, numbered so "previous period" means the

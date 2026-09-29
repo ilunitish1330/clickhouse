@@ -305,7 +305,9 @@ def conditions(rows):
 # ---------------------------------------------------------------------------- 5. actions
 
 def merged_total():
-    r = R.q(f"SELECT count() AS n, sum(toFloat64OrZero(AMOUNT)) AS a FROM {R._merged(BATCH)} AS m WHERE m.pending != 'delete'")[0]
+    # the dashboards' revenue: PV lines repeat their connection's charge and count nothing (ub_views.sql)
+    r = R.q(f"SELECT count() AS n, sumIf(toFloat64OrZero(AMOUNT), ADDITIONALITEMSDESCRIPTION != 'PV') AS a "
+            f"FROM {R._merged(BATCH)} AS m WHERE m.pending != 'delete'")[0]
     return int(r["n"]), float(r["a"])
 
 
@@ -337,7 +339,7 @@ def actions():
     R.undo(BATCH, int(first["line_no"]), USER)
     check(area, "undo one row after a formula", pending() == p["affected"] - 1, pending())
     discard()
-    check(area, "discard removes every pending edit", pending() == 0 and merged_total()[1] == a0)
+    check(area, "discard removes every pending edit", pending() == 0 and abs(merged_total()[1] - a0) < 0.01)
 
     # companions: a changed code brings its labels
     p = bulk.preview(BATCH, {"rule": praslin, "action": "update", "sets": [{"field": "REGION", "formula": "3"}]})
@@ -395,7 +397,7 @@ def actions():
     # delete: removes copies (they were only pending) and real rows
     pd = bulk.preview(BATCH, {"rule": {"rules": [{"field": "CUSTID", "op": "starts", "value": "COPY-"}]}, "action": "delete"})
     bulk.apply(BATCH, {"rule": {"rules": [{"field": "CUSTID", "op": "starts", "value": "COPY-"}]}, "action": "delete"}, USER)
-    check(area, "delete: deleting pending copies simply drops them", pending() == 0 and merged_total() == (n0, a0) and pd["affected"] == want,
+    check(area, "delete: deleting pending copies simply drops them", pending() == 0 and merged_total()[0] == n0 and abs(merged_total()[1] - a0) < 0.01 and pd["affected"] == want,
           (pending(), merged_total()))
     neg = {"combine": "and", "rules": [{"field": "AMOUNT", "op": "lt", "value": "0"}]}
     wneg = [r for r in rows_now() if num(r["AMOUNT"]) < 0]
@@ -634,7 +636,8 @@ def added_columns():
     want_b = {}
     for r in rows:
         k = (r["extra"] or {}).get(tkey, "") or "(not set)"
-        want_b[k] = want_b.get(k, 0) + num(r["AMOUNT"])
+        if r["ADDITIONALITEMSDESCRIPTION"] != "PV":  # a PV line's charge is a repeat: not revenue
+            want_b[k] = want_b.get(k, 0) + num(r["AMOUNT"])
     got_b = {x["label"]: x["values"][0] for x in (bands or {}).get("rows", [])}
     check(area, "dashboard: revenue by the text column's values", bands and all(abs(got_b.get(k, 0) - v) < 0.01 for k, v in want_b.items()),
           (got_b, want_b))

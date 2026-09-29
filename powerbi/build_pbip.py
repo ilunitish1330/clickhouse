@@ -44,7 +44,7 @@ TABLES = {
         ("period", D), ("utility_code", I), ("region_code", I), ("tariff_code", S), ("charge_key", S),
         ("customer_id", S), ("connection_id", S), ("meter_id", S), ("invoice_id", S), ("invoice_prefix", S),
         ("water_source", S), ("water_node", S), ("pv_connection", I), ("unit", S),
-        ("amount", N), ("quantity", N), ("consumption_qty", N), ("consumption_amount", N),
+        ("amount", N), ("quantity", N), ("pv_kwh", N), ("consumption_qty", N), ("consumption_amount", N),
         ("adjustment_amount", N), ("adjustment_qty", N), ("credit_amount", N), ("has_meter", I)]),
     "Period": ("ub.pbi_period", [
         ("period", D), ("year_month", S), ("period_label", S), ("year", I), ("period_index", I)]),
@@ -149,8 +149,11 @@ MEASURES = {
     # solar
     "PV Customers": ("Billing", "CALCULATE([Distinct Customers], Billing[pv_connection] = 1)", COUNT, "Solar PV"),
     "PV Connections": ("Billing", "CALCULATE([Distinct Connections], Billing[pv_connection] = 1)", COUNT, "Solar PV"),
-    "PV Billing": ("Billing", "CALCULATE([Total Revenue], ChargeType[is_pv] = 1)", MONEY, "Solar PV"),
+    # a PV line repeats its connection's consumption charge, so it carries no amount (ub_views.sql):
+    # PV billing is what PV customers' connections were billed; PV energy is the PV meters' kWh
+    "PV Billing": ("Billing", "CALCULATE([Total Revenue], Billing[pv_connection] = 1)", MONEY, "Solar PV"),
     "PV Billing Share %": ("Billing", "DIVIDE([PV Billing], [Total Revenue])", PCT, "Solar PV"),
+    "PV Meter kWh": ("Billing", "SUM(Billing[pv_kwh])", NUM, "Solar PV"),
     # per customer / per connection analytics
     "Customers in Band": ("CustomerPeriod", "DISTINCTCOUNT(CustomerPeriod[customer_id])", COUNT, "Analytics"),
     "Customer Revenue": ("CustomerPeriod", "SUM(CustomerPeriod[amount])", MONEY, "Analytics"),
@@ -443,11 +446,11 @@ def pages() -> list[tuple[str, str, dict | None, list]]:
     ]))
     out.append(("p08_solar", "8 Solar PV", utility_filter("Electricity"), [
         *slicers(period, region),
-        *cards("PV Customers", "PV Connections", "PV Billing", "PV Billing Share %"),
+        *cards("PV Meter kWh", "PV Customers", "PV Billing", "PV Billing Share %"),
         bar("clusteredColumnChart", g2(0), column("ConnectionPeriod", "pv_label"), "Average Use per Connection",
             title="Average kWh per connection: PV vs no PV", sort_desc=False),
         bar("clusteredBarChart", g2(1), region, "PV Billing", title="PV billing by region"),
-        bar("clusteredColumnChart", g2b(0), period, "PV Billing", title="PV billing by period", sort_desc=False),
+        bar("clusteredColumnChart", g2b(0), period, "PV Meter kWh", title="PV meter kWh by period", sort_desc=False),
         table(g2b(1), [column("ConnectionPeriod", "pv_label"), measure("Connections Billed"),
                        measure("Average Use per Connection")], "PV and non-PV connections"),
     ]))
