@@ -996,3 +996,6 @@ td.n .btn + .btn { margin-left: 6px; }
 .pw-rules li.ok { color: var(--good-ink); }
 .pw-rules li.ok svg.i { opacity: 1; }
 @media (max-width: 420px) { .pw-rules ul { grid-template-columns: 1fr; } }
+
+/* a dialog never grows past the screen: it scrolls inside, so its buttons stay reachable */
+.modal { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; }

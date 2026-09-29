@@ -1109,9 +1109,18 @@
       async function preview() {
         const my = ++seq, box = body.querySelector("#fb-preview"), applyBtn = body.querySelector("#fb-apply");
         if (!box) return;
-        box.classList.add("loading");
         body.querySelectorAll(".fb-err").forEach((e) => { e.innerHTML = ""; });
         body.querySelectorAll(".fb-formula").forEach((e) => e.classList.remove("bad"));
+        // a field without a formula yet: say so here instead of asking the server for a preview that cannot work
+        const blank = fb.action === "update" || fb.action === "copy" ? fb.sets.findIndex((st) => !String(st.formula || "").trim()) : -1;
+        if (blank >= 0 && fb.action === "update") {
+          last = null; applyBtn.disabled = true; box.classList.remove("loading");
+          countOnly();
+          body.querySelector(`#fb-err-${blank}`).innerHTML = `<span class="muted">Type a formula, or pick one from Examples.</span>`;
+          box.innerHTML = `<div class="note">The preview appears as soon as every field has a formula.</div>`;
+          return;
+        }
+        box.classList.add("loading");
         let r, d;
         try {
           r = await fetch(`/api/review/${encodeURIComponent(b.batch_id)}/formula/preview`, { method: "POST", credentials: "same-origin",
