@@ -191,6 +191,14 @@ def main() -> None:
        "e-mail sign-in")
     ok(jane.get("/api/me").json()["must_change"], "first password must be changed")
 
+    # new passwords need 8+ characters with a letter, a number and a special character (old ones keep working)
+    for weak in ("short1!", "password1", "Password!", "12345678!", "        "):
+        r = jane.post("/api/me/password", json={"current": "Start-pass-1", "new": weak})
+        ok(r.status_code == 400 and "special character" in r.text, (weak, r.text))
+        r = admin.post("/api/users", json={"username": "jane.doe", "full_name": "Jane Doe", "email": "jane.doe@gmail.com",
+                                            "roles": ["finance"], "region_code": 0, "password": weak, "active": True})
+        ok(r.status_code == 400 and "special character" in r.text, ("admin", weak, r.text))
+
     # a password change ends other sessions but keeps this one
     other = client()
     ok(other.post("/api/login", json={"username": "jane.doe", "password": "Start-pass-1"}).status_code == 200, "2nd")

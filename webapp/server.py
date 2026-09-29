@@ -18,6 +18,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import os
 import secrets
 import subprocess
@@ -153,6 +154,19 @@ def save_user(username, full_name, role, region, *, password=None, must_change=0
     ch(f"INSERT INTO {APP_DB}.users (username, full_name, role, region_code, salt, pw_hash, must_change, active, "
        f"{', '.join(LINKS)}) VALUES ({esc(username)}, {esc(full_name)}, {esc(role)}, {int(region)}, {esc(salt)}, "
        f"{esc(pw_hash)}, {int(must_change)}, {int(active)}, {', '.join(esc(vals[k]) for k in LINKS)})")
+
+
+PASSWORD_RULE = ("Passwords need at least 8 characters, with at least one letter, one number and one special "
+                 "character (like ! @ # $ % & * -)")
+
+
+def password_problem(password: str) -> str:
+    """"" when a new password is strong enough, else the rule. Checked wherever a password is set;
+    existing passwords keep working until they are changed."""
+    if (len(password) < 8 or not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password)
+            or not re.search(r"[^A-Za-z0-9]", password)):
+        return PASSWORD_RULE
+    return ""
 
 
 def password_ok(user: dict, password: str) -> bool:
@@ -443,8 +457,8 @@ async def invite_accept(token: str, request: Request, response: Response):
         raise HTTPException(400, "Username: letters, digits, dot, dash or underscore (up to 40)")
     if not full_name:
         raise HTTPException(400, "Enter your full name")
-    if len(password) < 8:
-        raise HTTPException(400, "Passwords need at least 8 characters")
+    if password_problem(password):
+        raise HTTPException(400, PASSWORD_RULE)
     with auth.ACCEPT_LOCK:
         row = auth.find_token("invite", token)
         if not row:
@@ -497,8 +511,8 @@ def auth_reset_get(token: str):
 async def auth_reset(token: str, request: Request, response: Response):
     b = await request.json()
     password = str(b.get("password", ""))
-    if len(password) < 8:
-        raise HTTPException(400, "Passwords need at least 8 characters")
+    if password_problem(password):
+        raise HTTPException(400, PASSWORD_RULE)
     with auth.ACCEPT_LOCK:
         row = auth.find_token("reset", token)
         user = get_user(row["username"]) if row else None
@@ -973,8 +987,8 @@ async def upsert_user(request: Request):
     password = b.get("password") or None
     if not existing and not password:
         raise HTTPException(400, "A new user needs a password")
-    if password and len(password) < 8:
-        raise HTTPException(400, "Passwords need at least 8 characters")
+    if password and password_problem(password):
+        raise HTTPException(400, PASSWORD_RULE)
     if existing and username == admin["username"] and (not b.get("active", True) or "admin" not in role_ids(role)):
         raise HTTPException(400, "You cannot demote or disable your own account")
     save_user(username, str(b.get("full_name") or username), role, region, password=password,
@@ -1000,8 +1014,8 @@ async def change_password(request: Request, response: Response):
     if user["pw_hash"] and not password_ok(user, str(b.get("current", ""))):
         raise HTTPException(400, "Current password is wrong")
     new = str(b.get("new", ""))
-    if len(new) < 8:
-        raise HTTPException(400, "Passwords need at least 8 characters")
+    if password_problem(new):
+        raise HTTPException(400, PASSWORD_RULE)
     save_user(user["username"], user["full_name"], user["role"], user["region_code"], password=new, must_change=0,
               active=1, keep=user)
     audit(user["username"], "password_changed")

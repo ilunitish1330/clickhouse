@@ -63,7 +63,12 @@ On **Users & roles** an administrator has two ways to add someone:
 
 Signing in:
 
-- People sign in with their username or e-mail address.
+- People sign in with their username or e-mail address. Every password box has an eye button to show
+  what was typed.
+- A new password needs at least 8 characters, with a letter, a number and a special character. A
+  checklist under the box ticks each rule while typing, and the server checks the same rule (first
+  password, invitations, resets and passwords an admin sets). Existing passwords keep working until
+  they are changed.
 - After 5 wrong passwords an account is locked for 15 minutes. Saving the user on Users & roles lifts the lock.
 - **Forgot password?** e-mails a reset link that works once, for 60 minutes. The answer is the same
   whether or not the account exists.

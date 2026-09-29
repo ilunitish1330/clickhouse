@@ -92,7 +92,7 @@
       try { d = await api(`/api/auth/reset/${encodeURIComponent(token || "")}`); }
       catch (err) { box.innerHTML = linkProblem(err.message, true); return; }
       box.innerHTML = `<form id="reset-form"><h2>Choose a new password</h2>
-        <p class="sub">For the account <b>${esc(d.username)}</b>. At least 8 characters.</p><div class="msg"></div>
+        <p class="sub">For the account <b>${esc(d.username)}</b>.</p><div class="msg"></div>
         <label class="field"><span>New password</span><input name="password" type="password" minlength="8" required autocomplete="new-password" autofocus></label>
         <label class="field"><span>Repeat it</span><input name="again" type="password" minlength="8" required autocomplete="new-password"></label>
         <button class="btn primary block" type="submit">Save and sign in</button></form>`;
@@ -1432,7 +1432,7 @@
   }
 
   function passwordModal(forced) {
-    modal(`<h2>${forced ? "Choose a new password" : state.me.has_password ? "Change password" : "Set a password"}</h2><p class="sub">${forced ? "Your account still has its first password. Pick your own to continue." : "At least 8 characters."}</p>
+    modal(`<h2>${forced ? "Choose a new password" : state.me.has_password ? "Change password" : "Set a password"}</h2><p class="sub">${forced ? "Your account still has its first password. Pick your own to continue." : "At least 8 characters, with a letter, a number and a special character."}</p>
       <form id="pf" ${forced ? "data-forced" : ""}><div id="perr"></div>
       ${state.me.has_password ? `<label class="field"><span>Current password</span><input name="current" type="password" required autocomplete="current-password"></label>` : `<p class="hint">You sign in with Google or Microsoft. A password lets you also sign in with your username.</p>`}
       <label class="field"><span>New password</span><input name="new" type="password" minlength="8" required autocomplete="new-password"></label>
@@ -1489,5 +1489,41 @@
     route();
     bgResume();
   }
+  // ------------------------------------------------------------------ password boxes
+  // Every password box gets an eye button to show what was typed; every box where a new
+  // password is chosen (autocomplete="new-password", not the "repeat" box) gets the rule with
+  // live ticks. The server checks the same rule (server.py password_problem).
+  const PW_RULES = [["len", "At least 8 characters", (v) => v.length >= 8], ["let", "A letter", (v) => /[A-Za-z]/.test(v)],
+    ["num", "A number", (v) => /\d/.test(v)], ["sym", "A special character (! @ # $ …)", (v) => /[^A-Za-z0-9]/.test(v)]];
+  function enhancePasswords(root) {
+    root.querySelectorAll("input[type=password]:not([data-pw])").forEach((inp) => {
+      inp.dataset.pw = "1";
+      const wrap = document.createElement("div"); wrap.className = "pw-wrap";
+      inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
+      const eye = document.createElement("button");
+      eye.type = "button"; eye.className = "pw-eye"; eye.setAttribute("aria-label", "Show password"); eye.title = "Show password";
+      eye.innerHTML = icon("eye");
+      eye.onclick = () => {
+        const show = inp.type === "password";
+        inp.type = show ? "text" : "password";
+        eye.innerHTML = icon(show ? "eye-off" : "eye");
+        eye.title = show ? "Hide password" : "Show password"; eye.setAttribute("aria-label", eye.title);
+        inp.focus();
+      };
+      wrap.appendChild(eye);
+      if (inp.autocomplete === "new-password" && inp.name !== "again") {
+        const rules = document.createElement("div"); rules.className = "pw-rules";
+        rules.innerHTML = `<div class="pw-note">Use letters, numbers and a special character.</div><ul>${PW_RULES.map(([k, t]) => `<li data-r="${k}">${icon("check")}${t}</li>`).join("")}</ul>`;
+        wrap.after(rules);
+        const check = () => PW_RULES.forEach(([k, , ok]) => rules.querySelector(`[data-r=${k}]`).classList.toggle("ok", ok(inp.value)));
+        inp.addEventListener("input", check); check();
+        // the browser also refuses to submit a password that breaks the rule
+        inp.addEventListener("input", () => inp.setCustomValidity(!inp.value || PW_RULES.every(([, , ok]) => ok(inp.value)) ? ""
+          : "Use at least 8 characters with a letter, a number and a special character."));
+      }
+    });
+  }
+  new MutationObserver(() => enhancePasswords(document)).observe(document.body, { childList: true, subtree: true });
+
   boot();
 })();
