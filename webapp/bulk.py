@@ -39,11 +39,12 @@ def alias(col: str) -> str:
     return col.replace(":", "_")
 
 
-def check(spec: dict) -> dict:
+def check(spec: dict, batch_id: str | None = None) -> dict:
     """A clean spec, or Invalid / FormulaError saying what is wrong.
 
     add_column: {"action": "add_column", "column": {"name", "kind"}, "formula": optional, "rule"}
-    -- the rule picks the rows the formula fills; every other row starts blank."""
+    -- the rule picks the rows the formula fills; every other row starts blank.
+    batch_id: the batch it runs on, whose added columns it can use (None: any batch's, for saving)."""
     if not isinstance(spec, dict):
         raise Invalid("Malformed request")
     action = spec.get("action")
@@ -58,14 +59,16 @@ def check(spec: dict) -> dict:
             raise Invalid("A column name starts with a letter and has up to 40 letters, digits, spaces or - _ ( ) / % .")
         if kind not in ub_custom.KINDS:
             raise Invalid("Pick the new column's type: number, text or date")
-        if name.lower() in RESERVED | {c["name"].lower() for c in ub_custom.columns()}:
-            raise Invalid(f"There is already a column called {name}")
+        try:
+            ub_custom.check_name(name, kind, RESERVED, batch_id)
+        except ValueError as e:
+            raise Invalid(str(e))
         column = {"name": name, "kind": kind}
-        F.load_custom({"key": NEW, "name": name, "kind": kind})
+        F.load_custom({"key": NEW, "name": name, "kind": kind}, batch=batch_id)
         src = str(spec.get("formula") or "").strip()
         spec = {**spec, "sets": [{"field": f"x:{NEW}", "formula": src}] if src else []}
     else:
-        F.load_custom()
+        F.load_custom(batch=batch_id)
     sets = []
     if action != "delete":
         seen = set()
@@ -132,7 +135,7 @@ def _plan(batch_id: str, spec: dict) -> str:
 
 
 def preview(batch_id: str, spec: dict, sample: int = 20) -> dict:
-    spec = check(spec)
+    spec = check(spec, batch_id)
     plan = _plan(batch_id, spec)
     targets = [s["field"] for s in spec["sets"]]
     bads = ", ".join(f"countIf(bad_{i}) AS bad_{i}" for i in range(len(targets)))
@@ -181,7 +184,7 @@ def _revision(batch_id: str) -> int:
 
 def apply(batch_id: str, spec: dict, user: str) -> dict:
     p = preview(batch_id, spec, sample=0)
-    spec = check(spec)
+    spec = check(spec, batch_id)
     if p["invalid"]:
         raise Invalid("Some rows would get values their field cannot hold: "
                       + "; ".join(f"{x['label']} on {x['rows']:,} row(s)" for x in p["invalid"]))
@@ -195,8 +198,8 @@ def apply(batch_id: str, spec: dict, user: str) -> dict:
     b, u, rev = sql_list([batch_id]), sql_list([user]), _revision(batch_id)
     ch = ax_load.ch
     log = "INSERT INTO ub.edit_log (batch_id, line_no, action, column, old_value, new_value, user, revision) "
-    if act == "add_column":  # the column exists from now on (for every month); its values wait like any edit
-        col = ub_custom.add(spec["column"]["name"], spec["column"]["kind"], user, RESERVED)
+    if act == "add_column":  # the column exists for this batch only; its values wait like any edit
+        col = ub_custom.add(spec["column"]["name"], spec["column"]["kind"], user, RESERVED, batch_id)
         ident = f"x:{col['key']}"
         kind = ub_custom.KINDS[col["kind"]].split(" ")[0].lower()
         fill = f"; filled with {spec['sets'][0]['formula']}" if spec["sets"] else ""
@@ -206,7 +209,7 @@ def apply(batch_id: str, spec: dict, user: str) -> dict:
         if not spec["sets"] or not p["affected"]:
             return {"ok": True, "affected": 0, "action": act, "column": col}
         spec = check({"rule": spec["rule"], "action": "update",
-                      "sets": [{"field": ident, "formula": spec["sets"][0]["formula"]}]})
+                      "sets": [{"field": ident, "formula": spec["sets"][0]["formula"]}]}, batch_id)
         _write_update(b, u, rev, _plan(batch_id, spec), spec)
         return {"ok": True, "affected": p["affected"], "action": act, "column": col}
     plan = _plan(batch_id, spec)
@@ -288,12 +291,12 @@ def forget(name: str, user: str) -> dict:
     return {"ok": True}
 
 
-def reference() -> dict:
-    """What the builder offers: fields (with type), comparisons, functions, examples."""
+def reference(batch_id: str | None = None) -> dict:
+    """What the builder offers: fields (with type; added columns: this batch's), comparisons, functions, examples."""
     from review import DATES, NUMBER, WHOLE
     kind = lambda c: "number" if c in NUMBER | WHOLE else "code" if c in CODES else "date" if c in DATES else "text"
     added = [{"name": f"x:{c['key']}", "label": c["name"], "kind": c["kind"], "editable": True, "choices": [],
-              "custom": True, "created_by": c["created_by"]} for c in ub_custom.columns()]
+              "custom": True, "created_by": c["created_by"]} for c in ub_custom.columns(batch=batch_id)]
     return {
         "fields": [{"name": c, "label": LABELS.get(c, c), "kind": kind(c), "editable": c in EDITABLE,
                     "choices": list(CODES.get(c, []))} for c in COLS] + added,

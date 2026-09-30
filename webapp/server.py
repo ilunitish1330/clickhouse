@@ -740,7 +740,7 @@ async def load(request: Request, file: UploadFile = File(...)):
 @app.post("/api/rebuild")
 def rebuild(request: Request):
     user = current_user(request)
-    if not urole(user).can_load:
+    if not (urole(user).can_load or urole(user).can_review):  # reviewers rebuild from Data Review
         raise HTTPException(403, "Your role cannot run the pipeline")
     return start_job(user, "Rebuild aggregates", ["--rebuild"], "rebuild")
 
@@ -778,9 +778,9 @@ def review_call(fn, *args, locked=True):
 
 
 @app.get("/api/review/columns")
-def review_columns(request: Request):
+def review_columns(request: Request, batch: str = ""):
     reviewer(request)
-    return review.columns()
+    return review.columns(batch)
 
 
 @app.get("/api/review/batches")
@@ -808,9 +808,9 @@ def review_rows(batch_id: str, request: Request, search: str = "", changed: int 
 # --- formula builder: a rule picks rows, an action changes them (webapp/bulk.py) ---
 
 @app.get("/api/review/formula/reference")
-def formula_reference(request: Request):
+def formula_reference(request: Request, batch: str = ""):
     reviewer(request)
-    return bulk.reference()
+    return bulk.reference(batch)
 
 
 @app.post("/api/review/{batch_id}/formula/preview")
@@ -829,7 +829,7 @@ async def formula_apply(batch_id: str, request: Request):
 
 @app.post("/api/review/columns/remove")
 async def columns_remove(request: Request):
-    """Hide an added column everywhere; its values stay in the rows and the change log."""
+    """Hide an added column; its values stay in the rows and the change log."""
     user = reviewer(request)
     b = await request.json()
     audit(user["username"], "column_removed", str(b.get("ident", "")))

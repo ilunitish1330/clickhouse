@@ -563,7 +563,18 @@ def added_columns():
     check(area, "preview: amounts do not change", p["batch_amount_after"] == p["batch_amount"])
     out = bulk.apply(BATCH, add, USER)
     ident = f"x:{out['column']['key']}"
-    check(area, "the column exists at once, for every month", any(c["name"] == "TEST Discount" for c in ub_custom.columns()))
+    check(area, "the column exists at once, on this month only",
+          any(c["name"] == "TEST Discount" for c in ub_custom.columns(batch=BATCH))
+          and not any(c["name"] == "TEST Discount" for c in ub_custom.columns(batch="TEST-OTHER-MONTH")))
+    check(area, "another month's grid and formula builder do not offer it",
+          not any(c["name"] == "TEST Discount" for c in R.columns("TEST-OTHER-MONTH")["custom"])
+          and not any(f.get("label") == "TEST Discount" for f in bulk.reference("TEST-OTHER-MONTH")["fields"]))
+    expect_error(area, "another month cannot use it in a formula",
+                 lambda: (F.load_custom(batch="TEST-OTHER-MONTH"), F.compile_formula("[TEST Discount] + 1")), "unknown field")
+    check(area, "another month can add its own column of the same name and type", bulk.check(
+        {"action": "add_column", "column": {"name": "TEST Discount", "kind": "number"}}, "TEST-OTHER-MONTH"))
+    expect_error(area, "... but not with another type (they show as one column)", lambda: bulk.check(
+        {"action": "add_column", "column": {"name": "TEST Discount", "kind": "text"}}, "TEST-OTHER-MONTH"), "another period")
     got = {int(r["line_no"]): (r["extra"] or {}).get(out["column"]["key"], "") for r in rows_now()}
     wrong = [(n, got.get(n), v) for n, v in want.items() if got.get(n) != v]
     blank = sum(1 for n, v in got.items() if n not in want and v != "")
@@ -578,7 +589,7 @@ def added_columns():
     check(area, "a rule on the added column", pr["matched"] == big, (pr["matched"], big))
     pr = bulk.preview(BATCH, {"rule": {"rules": [{"field": ident, "op": "empty"}]}, "action": "delete"})
     check(area, "'is empty' finds the rows without a value", pr["matched"] == len(rows) - len(want), pr["matched"])
-    F.load_custom()
+    F.load_custom(batch=BATCH)
     sql, _, _ = F.compile_formula("[Amount] - [TEST Discount]")
     vals = R.q(f"SELECT m.line_no AS n, {sql} AS v FROM {R._merged(BATCH)} AS m WHERE m.pending != 'delete' ORDER BY n")
     bad = [v for v in vals if abs(float(v["v"]) - (num(next(r for r in rows if int(r['line_no']) == int(v['n']))["AMOUNT"])
@@ -602,7 +613,7 @@ def added_columns():
                       ("1abc", "starts with a letter"), ("x" * 41, "starts with a letter"), ("a]b", "starts with a letter"),
                       ("a'); DROP TABLE x; --", "starts with a letter")]:
         expect_error(area, f"column name {name[:20]!r} refused", lambda n=name: bulk.check(
-            {"action": "add_column", "column": {"name": n, "kind": "text"}, "rule": praslin}), msg)
+            {"action": "add_column", "column": {"name": n, "kind": "text"}, "rule": praslin}, BATCH), msg)
     expect_error(area, "a type other than number/text/date is refused", lambda: bulk.check(
         {"action": "add_column", "column": {"name": "TEST X", "kind": "blob"}}), "type")
     # a text column filled for every row, using the first column
@@ -610,7 +621,7 @@ def added_columns():
                            "formula": 'IF([TEST Discount] > 50, "Big", IF([Amount] > 1000, "High", "Normal"))'}, USER)
     check(area, "a text column filled on every row", t["affected"] == len(rows), t["affected"])
     empty = bulk.apply(BATCH, {"action": "add_column", "column": {"name": "TEST Empty", "kind": "date"}, "rule": {"rules": []}}, USER)
-    check(area, "a column can start empty", empty["affected"] == 0 and any(c["name"] == "TEST Empty" for c in ub_custom.columns()))
+    check(area, "a column can start empty", empty["affected"] == 0 and any(c["name"] == "TEST Empty" for c in ub_custom.columns(batch=BATCH)))
     # finalize: ClickHouse and the dashboards
     ub_load.apply(BATCH, USER)
     rows = rows_now()
@@ -644,9 +655,14 @@ def added_columns():
     d2 = dashboards.page_data("executive", {**scope, "region": 3}, {"period": PERIOD})
     tile2 = next((x for x in d2["tiles"] if x["label"] == "Total TEST Discount"), None)
     check(area, "dashboard: the role's island limit applies (La Digue has no discount)", tile2 and (tile2["value"] or 0) == 0, tile2)
+    real = next((p_["period"] for p_ in dashboards.periods() if p_["period"] != PERIOD), None)
+    if real:
+        od = dashboards.page_data("executive", scope, {"period": real})
+        check(area, "dashboard: another month does not list the column", not any(x["custom"] for x in od["tiles"]),
+              [x["label"] for x in od["tiles"] if x["custom"]])
     hist = [h for h in R.history(BATCH, 20) if h["action"] == "formula" and "added the" in h["new_value"]]
     check(area, "history: one line per added column", len(hist) == 3, [h["new_value"] for h in hist])
-    # uploads fill a column with the same name
+    # an upload of another month does not get the column, even with a file column of that name
     cols = ub_load.COLS + ["TEST Band"]
     sample = R.q(f"SELECT {', '.join(ub_load.COLS)} FROM ub.raw_rows WHERE batch_id = {b} LIMIT 3")
     buf = io.StringIO()
@@ -659,7 +675,7 @@ def added_columns():
     try:
         ub_load.load([str(path)])
         got = R.q(f"SELECT `TEST Band` AS v FROM ub.v_custom WHERE batch_id = 'TEST-FORMULA-UPLOAD' ORDER BY line_no")
-        check(area, "an upload with a column of the same name fills it", [g["v"] for g in got] == [f"from file {i}" for i in range(3)], got)
+        check(area, "an upload of another month leaves a same-named file column out", [g["v"] for g in got] == ["", "", ""], got)
     finally:
         path.unlink()
         for t_ in ("raw_rows", "fact_lines"):
@@ -669,13 +685,13 @@ def added_columns():
     # remove
     bulk.remove_column(f"x:{empty['column']['key']}", USER)
     check(area, "a removed column leaves the pickers, grid and ClickHouse view",
-          not any(c["name"] == "TEST Empty" for c in ub_custom.columns())
+          not any(c["name"] == "TEST Empty" for c in ub_custom.columns(batch=BATCH))
           and "TEST Empty" not in {r["name"] for r in R.q("SELECT name FROM system.columns WHERE database = 'ub' AND table = 'v_custom'")})
-    F.load_custom()
+    F.load_custom(batch=BATCH)
     expect_error(area, "a removed column can no longer be used in a formula", lambda: F.compile_formula("[TEST Empty]"), "unknown field")
     check(area, "a new column never reuses a removed column's key",
-          bulk.check({"action": "add_column", "column": {"name": "TEST Again", "kind": "text"}}) and
-          ub_custom.add("TEST Again", "text", USER, bulk.RESERVED)["key"] not in (key, tkey, empty["column"]["key"]))
+          bulk.check({"action": "add_column", "column": {"name": "TEST Again", "kind": "text"}}, BATCH) and
+          ub_custom.add("TEST Again", "text", USER, bulk.RESERVED, BATCH)["key"] not in (key, tkey, empty["column"]["key"]))
     discard()
 
 

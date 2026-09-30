@@ -209,15 +209,22 @@ PAGES = {
 }
 
 
-def added_parts() -> tuple[list, list]:
+def added_parts(batches: set | None) -> tuple[list, list]:
     """Tiles and charts for the columns reviewers added (ub_custom.py), shown at the end of every
-    dashboard in their own colour. A number column: its total and by island; a text or date column:
-    revenue by value. The page's filters and the user's role apply as for everything else."""
+    dashboard in their own colour. A column belongs to one batch: only the columns of the batches on
+    screen show (None: every batch), and same-named columns of different periods show as one.
+    A number column: its total and by island; a text or date column: revenue by value. The page's
+    filters and the user's role apply as for everything else."""
     import ub_custom
-    tiles, charts = [], []
+    named: dict[str, list] = {}
     for c in ub_custom.columns():
-        v = f"extra[{sql_str(c['key'])}]"
-        name = c["name"]
+        if batches is None or not c["batch_id"] or c["batch_id"] in batches:
+            named.setdefault(c["name"], []).append(c)
+    tiles, charts = [], []
+    for name, cs in named.items():
+        c = cs[0]
+        keys = [f"extra[{sql_str(x['key'])}]" for x in cs]
+        v = keys[0] if len(keys) == 1 else f"concat({', '.join(keys)})"  # a row has at most one of them
         _DIM_TITLES[v] = name
         if c["kind"] == "number":
             m = f"cx_{c['key']}"
@@ -438,8 +445,6 @@ def num(v):
 
 def page_data(page_id: str, scope: dict, sel: dict) -> dict:
     page = PAGES[page_id]
-    added_tiles, added_charts = added_parts()
-    page = {**page, "tiles": page["tiles"] + added_tiles, "charts": page["charts"] + added_charts}
     pu = page["utility"]
     stats = Stats()
     version = data_version()
@@ -447,6 +452,11 @@ def page_data(page_id: str, scope: dict, sel: dict) -> dict:
     if not plist:
         return {"empty": True}
     ctx = {"periods": plist, "batches": period_batches(version)}
+    # added columns belong to one batch: only those of the periods on screen
+    shown = [sel["period"]] if sel.get("period") else \
+        [p["period"] for p in plist if sel["range"][0] <= p["period"] <= sel["range"][1]] if sel.get("range") else None
+    added_tiles, added_charts = added_parts(None if shown is None else {b for p in shown for b in ctx["batches"].get(p, [])})
+    page = {**page, "tiles": page["tiles"] + added_tiles, "charts": page["charts"] + added_charts}
     q = lambda sql: run(sql, version, stats)
     by_period = {p["period"]: p for p in plist}
     prev_period = None

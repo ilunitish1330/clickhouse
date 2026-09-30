@@ -140,6 +140,10 @@ against the file, then the aggregates and dashboards are built. The upload is li
 3. **Mark as reviewed** makes the period **Final**. Editing Final data later, of any period,
    starts the next Draft revision.
 
+**Rebuild aggregates** (next to **Open dashboards**) rebuilds every period's aggregates and
+dashboards from the stored rows, the same as the button on Data Load, without leaving Data Review.
+Pending edits are not in the stored rows yet: Finalize them first.
+
 ### Formula builder
 
 The **Formula builder** tab changes many rows at once, in four steps:
@@ -171,18 +175,21 @@ The **Formula builder** tab changes many rows at once, in four steps:
 **Adding a column**: choose **Add a column** in step 2, give it a name and a type (number,
 text or date), and optionally a formula that fills the rows picked in step 1 (e.g. *Discount* =
 `ROUND([Amount] * 0.1, 2)`, or *Band* = `IF([Amount] > 1000, "High", "Normal")`). Every other
-row starts blank. The column exists for every month from then on: it shows in the grid (editable),
-can be used in conditions and formulas like any field (`[Discount]`), and can be removed from the
-strip at the top of the builder (its values stay in the change history). Its values reach
+row starts blank. The column belongs to the period it was added on, and only there: it shows in
+that period's grid (editable), can be used in that period's conditions and formulas like any field
+(`[Discount]`), and can be removed from the strip at the top of the builder (its values stay in the
+change history). Other periods don't get it. To have it on another period too, add a column with the
+same name (and type) there: ClickHouse and the dashboards show the two as one column. Its values reach
 ClickHouse and the dashboards when you finalize:
 
 - **ClickHouse**: `SELECT * FROM ub.v_custom` has every added column as a real, typed column
-  (number, text, date) next to the billing line's keys, ready for queries or Power BI.
+  (number, text, date) next to the billing line's keys, ready for queries or Power BI. It is blank
+  on the rows of periods the column wasn't added to.
 - **Dashboards**: every dashboard ends with an **Added columns** section, in the added columns'
   own colour (purple): each number column's total and by island, each text or date column's
   revenue by value, for the page's filters and the user's role (on the Water page, water rows
-  only). Added columns are purple in the review grid and the formula builder too.
-- An upload whose file has a column with the same name fills it.
+  only). It lists only the columns of the period(s) on screen. Added columns are purple in the review grid and the formula builder too.
+- Uploading that period's file again, with a column of the same name, fills it.
 
 Applying adds the changes to the pending edits, like hand edits: check them on the Rows tab
 (**Show matching rows**), then Finalize. Formulas can be saved and loaded again on any period.

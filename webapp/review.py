@@ -54,15 +54,16 @@ def q(sql: str) -> list[dict]:
 # Columns a reviewer added (ub_custom.py) are "x:<key>" here; their values live in the row's
 # `extra` map. A row is a dict of the export's columns plus "extra" ({key: value}).
 
-def custom() -> dict:
-    """"x:<key>" -> the added column, for the columns in use now."""
-    return {f"x:{c['key']}": c for c in ub_custom.columns()}
+def custom(batch_id: str) -> dict:
+    """"x:<key>" -> the added column, for the columns this batch has now."""
+    return {f"x:{c['key']}": c for c in ub_custom.columns(batch=batch_id)}
 
 
-def columns() -> dict:
-    cus = custom()
+def columns(batch_id: str) -> dict:
+    cus = custom(batch_id)
     labels = dict(LABELS)
-    labels.update({f"x:{c['key']}": f"{c['name']} (removed)" for c in ub_custom.columns(include_removed=True)})
+    labels.update({f"x:{c['key']}": f"{c['name']} (removed)"
+                   for c in ub_custom.columns(include_removed=True, batch=batch_id)})
     labels.update({k: c["name"] for k, c in cus.items()})
     return {"all": COLS + list(cus), "editable": EDITABLE + list(cus), "default": DEFAULT_VIEW + list(cus),
             "labels": labels, "number": sorted(NUMBER) + [k for k, c in cus.items() if c["kind"] == "number"],
@@ -150,7 +151,7 @@ def rows(batch_id: str, search: str = "", changed: bool = False, page: int = 1, 
     conds = ["1"]
     if rule:  # the formula builder's "Which rows", to see exactly what it matches
         import formula
-        formula.load_custom()
+        formula.load_custom(batch=batch_id)
         conds.append(f"({formula.compile_rule(rule)}) AND pending != 'delete'")
     if search.strip():
         s = sql_list([search.strip()])
@@ -175,7 +176,7 @@ def rows(batch_id: str, search: str = "", changed: bool = False, page: int = 1, 
         for r in q(f"SELECT line_no, {', '.join(COLS)}, extra FROM ub.raw_rows WHERE batch_id = {sql_list([batch_id])} "
                    f"AND line_no IN ({', '.join(str(n) for n in edited)})"):
             before[int(r["line_no"])] = r
-    cus = custom()
+    cus = custom(batch_id)
     out = []
     for r in got:
         n = int(r["line_no"])
@@ -255,7 +256,7 @@ def edit(batch_id: str, line_no: int, changes: dict, user: str) -> dict:
         raise Invalid("No such row")
     if action == "delete":
         raise Invalid("This row is marked for deletion: undo that first")
-    cus = custom()
+    cus = custom(batch_id)
     clean = _fill_companions({c: validate(c, v) for c, v in changes.items() if not c.startswith("x:")})
     extra_changes = {c: validate_custom(c, v, cus) for c, v in changes.items() if c.startswith("x:")}
     cur["extra"] = {k: v for k, v in (cur.get("extra") or {}).items() if v != ""}
@@ -287,7 +288,7 @@ def edit(batch_id: str, line_no: int, changes: dict, user: str) -> dict:
 
 def add(batch_id: str, values: dict, user: str) -> dict:
     batch(batch_id)
-    cus = custom()
+    cus = custom(batch_id)
     clean = _fill_companions({c: validate(c, v) for c, v in values.items() if c in EDITABLE})
     extra = {cus[c]["key"]: validate_custom(c, v, cus) for c, v in values.items() if c in cus}
     extra = {k: v for k, v in extra.items() if v}

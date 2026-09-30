@@ -43,11 +43,12 @@ def sql_text(v: str) -> str:
 CUSTOM: dict = {}  # "x:<key>" -> {"key", "name", "kind"}: the added columns, reloaded per request
 
 
-def load_custom(extra: dict | None = None) -> None:
-    """The added columns as they are now (plus, while previewing a new column, that one)."""
+def load_custom(extra: dict | None = None, batch: str | None = None) -> None:
+    """The added columns as they are now -- with batch, that batch's only -- (plus, while
+    previewing a new column, that one)."""
     import ub_custom
     CUSTOM.clear()
-    for c in ub_custom.columns():
+    for c in ub_custom.columns(batch=batch):
         CUSTOM[f"x:{c['key']}"] = c
     if extra:
         CUSTOM[f"x:{extra['key']}"] = extra

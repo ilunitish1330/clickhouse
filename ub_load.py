@@ -99,11 +99,12 @@ def stage(name: str, text: str) -> int:
         sys.exit(f"{name}: columns missing from the export: {', '.join(missing)}")
     idx = [pos.get(c.upper()) for c in COLS]
     fallback_batch = Path(name).stem
-    # columns a reviewer added, if the file has them (matched by name)
-    added = [(c["key"], pos[c["name"].upper()]) for c in ub_custom.columns() if c["name"].upper() in pos]
+    # columns a reviewer added, if the file has them (matched by name), each for its own batch only
+    found = [c for c in ub_custom.columns() if c["name"].upper() in pos]
+    added = [(c["key"], pos[c["name"].upper()], c["batch_id"]) for c in found]
     if added:
-        print(f"{name}: also reading added column(s): "
-              + ", ".join(c["name"] for c in ub_custom.columns() if c["name"].upper() in pos), flush=True)
+        print(f"{name}: also reading added column(s), for the period each was added to: "
+              + ", ".join(c["name"] for c in found), flush=True)
 
     ch("TRUNCATE TABLE ub.raw_load")
     batch, n = [], 0
@@ -117,7 +118,9 @@ def stage(name: str, text: str) -> int:
             vals.append("" if v == "NULL" else v)
         if not vals[COLS.index("BatchId")]:
             vals[COLS.index("BatchId")] = fallback_batch
-        extra = {k: rec[i].strip() for k, i in added if i < len(rec) and rec[i].strip() not in ("", "NULL")}
+        b = vals[COLS.index("BatchId")]
+        extra = {k: rec[i].strip() for k, i, cb in added
+                 if cb in ("", b) and i < len(rec) and rec[i].strip() not in ("", "NULL")}
         batch.append([n] + vals + [extra])
         if len(batch) == CHUNK:
             ax_load.insert("ub.raw_load", ["line_no"] + COLS + ["extra"], batch)

@@ -2,7 +2,9 @@
 
 Each row keeps the values of added columns in `extra`, a Map(String, String) on ub.raw_rows,
 under a stable key (c1, c2, ...). The key never changes and is never reused, so renaming or
-removing a column cannot mix up values. ub.custom_columns holds the definitions; the view
+removing a column cannot mix up values. A column belongs to the batch (period) it was added on:
+it shows, and can be filled, only there. Another period can get its own column of the same name
+(same type); v_custom shows those as one column. A blank batch_id (an older install) means every batch. ub.custom_columns holds the definitions; the view
 ub.v_custom shows the finalized billing lines with every active added column as a real,
 typed, named column -- what to query in ClickHouse or import into Power BI.
 
@@ -25,40 +27,50 @@ def text(v) -> str:
     return "'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def columns(include_removed: bool = False) -> list[dict]:
-    """[{key, name, kind, created_by, changed_at, deleted}], in the order they were added."""
+def columns(include_removed: bool = False, batch: str | None = None) -> list[dict]:
+    """[{key, name, kind, batch_id, created_by, changed_at, deleted}], in the order they were added.
+    With batch: only that batch's columns."""
     try:
-        rows = q("SELECT key, name, kind, created_by, toString(changed_at) AS changed_at, deleted "
+        rows = q("SELECT key, name, kind, batch_id, created_by, toString(changed_at) AS changed_at, deleted "
                  "FROM ub.custom_columns FINAL ORDER BY toUInt32OrZero(substring(key, 2))")
     except Exception:
         return []  # before the first schema run
-    return [r for r in rows if include_removed or not int(r["deleted"])]
+    return [r for r in rows if (include_removed or not int(r["deleted"]))
+            and (batch is None or r["batch_id"] in ("", batch))]
 
 
-def add(name: str, kind: str, user: str, reserved: set) -> dict:
-    """A new column. reserved: names already taken by the export's own columns (lower case)."""
+def add(name: str, kind: str, user: str, reserved: set, batch: str) -> dict:
+    """A new column on this batch. reserved: names already taken by the export's own columns (lower case)."""
     name = re.sub(r"\s+", " ", str(name or "")).strip()
     if not NAME_RE.fullmatch(name):
         raise ValueError("A column name starts with a letter and has up to 40 letters, digits, spaces or - _ ( ) / % .")
     if kind not in KINDS:
         raise ValueError("Pick a type: number, text or date")
-    taken = reserved | {c["name"].lower() for c in columns()}
-    if name.lower() in taken:
-        raise ValueError(f"There is already a column called {name}")
+    check_name(name, kind, reserved, batch)
     used = [int(c["key"][1:]) for c in columns(include_removed=True) if c["key"][1:].isdigit()]
     key = f"c{max(used, default=0) + 1}"
-    ax_load.ch("INSERT INTO ub.custom_columns (key, name, kind, created_by) VALUES "
-               f"({text(key)}, {text(name)}, {text(kind)}, {text(user)})")
+    ax_load.ch("INSERT INTO ub.custom_columns (key, name, kind, batch_id, created_by) VALUES "
+               f"({text(key)}, {text(name)}, {text(kind)}, {text(batch)}, {text(user)})")
     refresh_view()
-    return {"key": key, "name": name, "kind": kind}
+    return {"key": key, "name": name, "kind": kind, "batch_id": batch}
+
+
+def check_name(name: str, kind: str, reserved: set, batch: str) -> None:
+    """Unique within the batch; the same name on another period must have the same type, since
+    v_custom shows the two as one column."""
+    if name.lower() in reserved | {c["name"].lower() for c in columns(batch=batch)}:
+        raise ValueError(f"There is already a column called {name}")
+    other = next((c for c in columns() if c["name"].lower() == name.lower()), None)
+    if other and other["kind"] != kind:
+        raise ValueError(f"{name} is a {other['kind']} column on another period: use that type or another name")
 
 
 def remove(key: str, user: str) -> None:
     col = next((c for c in columns() if c["key"] == key), None)
     if not col:
         raise ValueError("No such column")
-    ax_load.ch("INSERT INTO ub.custom_columns (key, name, kind, created_by, deleted) VALUES "
-               f"({text(key)}, {text(col['name'])}, {text(col['kind'])}, {text(user)}, 1)")
+    ax_load.ch("INSERT INTO ub.custom_columns (key, name, kind, batch_id, created_by, deleted) VALUES "
+               f"({text(key)}, {text(col['name'])}, {text(col['kind'])}, {text(col['batch_id'])}, {text(user)}, 1)")
     refresh_view()
 
 
@@ -72,8 +84,14 @@ def value_sql(key: str, kind: str, source: str = "extra") -> str:
 
 
 def refresh_view() -> None:
-    """ub.v_custom: the finalized billing lines with each active added column as a real column."""
-    cols = "".join(f",\n    {value_sql(c['key'], c['kind'])} AS `{c['name']}`" for c in columns())
+    """ub.v_custom: the finalized billing lines with each active added column as a real column
+    (same-named columns of different periods as one: each row has at most one of them)."""
+    named: dict[str, list] = {}
+    for c in columns():
+        named.setdefault(c["name"], []).append(c)
+    one = lambda cs: value_sql(cs[0]["key"], cs[0]["kind"]) if len(cs) == 1 else \
+        "coalesce(" + ", ".join(value_sql(c["key"], c["kind"]) for c in cs) + ")"
+    cols = "".join(f",\n    {one(cs)} AS `{name}`" for name, cs in named.items())
     ax_load.ch(f"""CREATE OR REPLACE VIEW ub.v_custom AS
 SELECT batch_id, line_no, period, utility_code, utility_name, region_code, region_name, customer_id,
        connection_id, invoice_id, tariff_code, tariff_desc, sector_type, amount, quantity{cols}

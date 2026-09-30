@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS ub.custom_columns
     key        String,                   -- c1, c2, ...
     name       String,
     kind       LowCardinality(String),   -- number | text | date
+    batch_id   String DEFAULT '',        -- the batch it belongs to ('' = every batch, older installs)
     created_by String,
     changed_at DateTime64(3) DEFAULT now64(3),
     deleted    UInt8 DEFAULT 0
@@ -188,5 +189,6 @@ ENGINE = ReplacingMergeTree(changed_at)
 ORDER BY key;
 
 ALTER TABLE ub.raw_load ADD COLUMN IF NOT EXISTS extra Map(String, String);
+ALTER TABLE ub.custom_columns ADD COLUMN IF NOT EXISTS batch_id String DEFAULT '' AFTER kind;
 ALTER TABLE ub.raw_rows ADD COLUMN IF NOT EXISTS extra Map(String, String);
 ALTER TABLE ub.raw_pending ADD COLUMN IF NOT EXISTS extra Map(String, String);

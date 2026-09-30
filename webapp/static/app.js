@@ -700,7 +700,9 @@
       <div class="topbar"><div><div class="eyebrow">Data</div><h1>Data Review</h1><p class="subtitle">Uploads go live as a <b>Draft</b>. Check the dashboards and the rows, edit rows here if needed, press <b>Finalize modified data</b> to rebuild the aggregates and dashboards, then <b>Mark as reviewed</b> to make the data Final.</p></div></div>
       <div class="rv-batches" id="rv-batches"><div class="skeleton"></div></div>
       <section class="card wide rv-panel" id="rv-panel" hidden></section>`;
-    try { if (!rv.cols) rv.cols = await api("/api/review/columns"); } catch (e) { return; }
+    // added columns belong to one period: the grid and the formula builder ask for the chosen batch's
+    const colsUrl = () => `/api/review/columns?batch=${encodeURIComponent(rv.batch || "")}`;
+    const refUrl = () => `/api/review/formula/reference?batch=${encodeURIComponent(rv.batch || "")}`;
     const L = (c) => rv.cols.labels[c] || c;
     let batches = [];
 
@@ -709,6 +711,7 @@
       batches = d.batches;
       if (!batches.length) { main.querySelector("#rv-batches").innerHTML = `<div class="note">Nothing uploaded yet.</div>`; return; }
       if (!batches.some((b) => b.batch_id === rv.batch)) rv.batch = batches[0].batch_id;
+      if (rv.colsFor !== rv.batch) { rv.cols = await api(colsUrl()); rv.ref = null; rv.colsFor = rv.batch; }
       main.querySelector("#rv-batches").innerHTML = batches.map((b) => `
         <button class="rv-card ${b.batch_id === rv.batch ? "on" : ""}" data-batch="${esc(b.batch_id)}">
           <span class="rv-period">${esc(b.period ? fmtPeriod(b.period) : "—")}</span>
@@ -735,14 +738,16 @@
         step(3, "Finalize: rebuild dashboards", pending ? "next" : +b.revision > 1 || final ? "done" : "skip"),
         step(4, final && !pending ? "Reviewed: Final" : "Mark as reviewed", pending ? "wait" : final ? "done" : "next"),
       ].join(`<i class="rv-arrow"></i>`);
-      const msg = busy && bg.job === rv.job ? `${icon("pulse")} Finalizing: writing the edits and rebuilding the aggregates and dashboards…`
+      const msg = busy && bg.job === rv.job && bg.name === "Rebuild aggregates" ? `${icon("pulse")} Rebuilding every period's aggregates and dashboards…`
+        : busy && bg.job === rv.job ? `${icon("pulse")} Finalizing: writing the edits and rebuilding the aggregates and dashboards…`
         : pending ? `${icon("edit")} ${pending} edited row${pending > 1 ? "s are" : " is"} not on the dashboards yet. Finalize to rebuild the aggregates and dashboards with ${pending > 1 ? "them" : "it"}.`
         : final ? `${icon("check")} Reviewed by <b>${esc(b.changed_by)}</b> on ${esc(b.last_change.slice(0, 16))}. Editing a row starts revision ${+b.revision + 1}, which needs reviewing again.`
         : `${icon("spark")} Check the <a href="#/${state.me.pages[0]?.id || "executive"}?period=${esc(b.period)}">dashboards for ${esc(fmtPeriod(b.period))}</a> and the rows below. Edit if needed, then mark the data reviewed.`;
       el.innerHTML = `
         <div class="rv-head"><div><h2>${esc(fmtPeriod(b.period))} ${statusPill(b.status, b.revision)}</h2>
           <div class="meta">${esc(b.file_name)} · ${(+b.lines).toLocaleString()} rows on the dashboards · ${CURRENCY} ${Math.round(b.amount).toLocaleString()} · revision ${b.revision}${b.changed_by ? ` · last change by ${esc(b.changed_by)}, ${esc(b.last_change.slice(0, 16))}` : ""}</div></div>
-          <a class="btn small" href="#/${state.me.pages[0]?.id || "executive"}?period=${esc(b.period)}">${icon("chart")}Open dashboards</a></div>
+          <div class="rv-btns"><button class="btn small" id="rv-rebuild" ${busy ? "disabled" : ""} title="Rebuild every period's aggregates and dashboards from the stored rows${pending ? ". Pending edits are not included: Finalize them first" : ""}">${icon("pulse")}Rebuild aggregates</button>
+          <a class="btn small" href="#/${state.me.pages[0]?.id || "executive"}?period=${esc(b.period)}">${icon("chart")}Open dashboards</a></div></div>
         <div class="rv-flow">${flow}</div>
         <div class="rv-bar ${pending ? "pending" : final ? "final" : "draft"}"><p>${msg}</p><div class="rv-btns">
           ${pending ? `<button class="btn" id="rv-discard" ${busy ? "disabled" : ""}>${icon("undo")}Discard edits</button>
@@ -752,6 +757,7 @@
         <div class="tabs"><button class="${rv.tab === "rows" ? "on" : ""}" data-tab="rows">${icon("table")}Rows</button><button class="${rv.tab === "formula" ? "on" : ""}" data-tab="formula">${icon("fx")}Formula builder</button><button class="${rv.tab === "history" ? "on" : ""}" data-tab="history">${icon("undo")}Change history</button></div>
         <div id="rv-body"></div>`;
       el.querySelectorAll("[data-tab]").forEach((t) => t.onclick = () => { rv.tab = t.dataset.tab; panel(); });
+      el.querySelector("#rv-rebuild").addEventListener("click", async () => { await bgRebuild(); rv.job = bg.job; panel(); });
       el.querySelector("#rv-discard")?.addEventListener("click", async () => {
         if (!confirm(`Discard all ${pending} pending edit(s) of ${fmtPeriod(b.period)}?`)) return;
         await act(`/api/review/${encodeURIComponent(b.batch_id)}/discard`, {}); refresh();
@@ -869,12 +875,12 @@
     }
 
     async function refreshColumns() {  // an added or removed column changes the grid and the pickers
-      try { rv.cols = await api("/api/review/columns"); rv.ref = await api("/api/review/formula/reference"); } catch (e) {}
+      try { rv.cols = await api(colsUrl()); rv.ref = await api(refUrl()); } catch (e) {}
     }
 
     async function formulaView() {
       const body = main.querySelector("#rv-body"), b = cur();
-      if (!rv.ref) { try { rv.ref = await api("/api/review/formula/reference"); } catch (e) { return; } }
+      if (!rv.ref) { try { rv.ref = await api(refUrl()); } catch (e) { return; } }
       const R = rv.ref, fb = rv.fb, FIELD = Object.fromEntries(R.fields.map((f) => [f.name, f]));
       const added = R.fields.filter((f) => f.custom);
       const fieldOpts = (cur, editableOnly) => ["number", "code", "text", "date"].map((k) => {
@@ -919,7 +925,7 @@
               <label class="field"><span>Column name</span><input id="fb-nc-name" maxlength="40" value="${esc(nc.name)}" placeholder="e.g. Discount" autocomplete="off"></label>
               <label class="field"><span>Type</span><select id="fb-nc-kind">${Object.entries(R.kinds).map(([k, v]) => `<option value="${k}" ${nc.kind === k ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
             </div>
-            <p class="hint">The column is added to every month. The formula fills the rows picked in step 1; every other row starts blank. Leave the formula empty for an empty column. Like any edit, the values reach the dashboards when you finalize.</p>`
+            <p class="hint">The column is added to this period only. The formula fills the rows picked in step 1; every other row starts blank. Leave the formula empty for an empty column. Like any edit, the values reach the dashboards when you finalize.</p>`
             : `<p class="hint">A formula like in Excel. Refer to fields as <code>[Amount]</code>; text goes in quotes. Formulas read each row's values before the change.</p>`}
             <div class="fb-toolbar" id="fb-toolbar">
               <select id="fb-ins-field"><option value="">Insert field…</option>${fieldOpts("", false)}</select>
@@ -1083,7 +1089,7 @@
       }
       body.querySelectorAll("[data-rmcol]").forEach((el) => el.onclick = async () => {
         const f = FIELD[el.dataset.rmcol];
-        if (!confirm(`Remove the column "${f.label}"?\n\nIt disappears from the grid, the formula builder and the dashboards for every month. Its values stay in the change history.`)) return;
+        if (!confirm(`Remove the column "${f.label}"?\n\nIt disappears from this period's grid, formula builder and dashboards. Its values stay in the change history.`)) return;
         if (await act("/api/review/columns/remove", { ident: f.name })) {
           toast(`${icon("check")}<span>Column <b>${esc(f.label)}</b> removed.</span>`, "good");
           await refreshColumns(); formulaView();
@@ -1190,7 +1196,7 @@
         if (!last) return;
         const n = last.affected, word = { update: "change", copy: "copy", delete: "delete" }[last.action];
         const ask = last.action === "add_column"
-          ? `Add the ${nc.kind} column "${nc.name.trim()}"${n ? `, with values on ${n.toLocaleString()} row(s) of ${fmtPeriod(b.period)}` : ""}?\n\nThe column exists for every month from now on. Its values join the pending edits; the dashboards show them when you finalize.`
+          ? `Add the ${nc.kind} column "${nc.name.trim()}"${n ? `, with values on ${n.toLocaleString()} row(s) of ${fmtPeriod(b.period)}` : ""}?\n\nThe column belongs to this period only. Its values join the pending edits; the dashboards show them when you finalize.`
           : `${word[0].toUpperCase() + word.slice(1)} ${n.toLocaleString()} row(s) of ${fmtPeriod(b.period)}?\n\nThe changes join the pending edits; the dashboards change only when you finalize.`;
         if (!confirm(ask)) return;
         const btn = body.querySelector("#fb-apply"); btn.disabled = true;
@@ -1272,7 +1278,7 @@
       if (!main.isConnected) { bgListener = null; return; }
       if (rv.job && bg.job === rv.job && !bgBusy()) { rv.job = null; refresh(); }
     };
-    if (bgBusy() && bg.name.startsWith("Finalize")) rv.job = bg.job;
+    if (bgBusy() && (bg.name.startsWith("Finalize") || bg.name === "Rebuild aggregates")) rv.job = bg.job;
     await loadBatches(); panel();
   }
 
