@@ -312,12 +312,12 @@ def load(paths: list[str]) -> None:
                 print(f"  WARNING: {src[0]} staged vs {dst[0]} stored")
             # PV lines are counted as repeats of their connection's charge (ub_views.sql): say so if
             # an export ever breaks that pattern, instead of silently leaving money out
-            odd = ch("SELECT count() FROM (SELECT connection_id, sumIf(line_amount, is_pv = 1) AS p, "
+            odd = ch("SELECT count() FROM (SELECT connection_id, period, sumIf(line_amount, is_pv = 1) AS p, "
                      "sumIf(line_amount, charge_type = 1 AND is_pv = 0) AS c FROM ub.v_lines "
-                     f"WHERE batch_id IN ({sql_list(batches)}) AND utility_code = 1 GROUP BY connection_id "
+                     f"WHERE batch_id IN ({sql_list(batches)}) AND utility_code = 1 GROUP BY connection_id, period "
                      "HAVING countIf(is_pv = 1) > 0 AND abs(p - c) >= 0.01) FORMAT TSV").strip()
             if odd != "0":
-                print(f"  WARNING: {odd} PV connection(s) whose PV line does not repeat their consumption charge: "
+                print(f"  WARNING: {odd} PV bill(s) (a connection in a month) whose PV line does not repeat the consumption charge: "
                       "their PV amount is left out of revenue; check these bills")
             for b in batches:  # a fresh upload is live at once, as a Draft waiting for review
                 ch(f"DELETE FROM ub.raw_pending WHERE batch_id = {sql_list([b])}")

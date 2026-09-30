@@ -47,9 +47,11 @@ SELECT
     toUInt8OrZero(r.FREETEXTINVOICE) AS is_free_text,
     toUInt8OrZero(r.CONNECTIONMEMBERTYPE) AS member_type,
     -- A PV customer's connection: the export flags only its PV line, so the flag is spread to
-    -- every line of that connection in the batch (PV billing = the bills of PV customers).
-    -- Every reader of this view filters by batch_id, so the window sees whole connections.
-    max(toUInt8OrZero(r.PVINDICATION)) OVER (PARTITION BY r.batch_id, r.CONNECTIONID) AS pv_connection,
+    -- every line of that connection in the same batch and billing period (PV billing = the bills
+    -- of PV customers that month; one file can hold several months). Every reader of this view
+    -- filters by batch_id, so the window sees whole connections.
+    max(toUInt8OrZero(r.PVINDICATION)) OVER (PARTITION BY r.batch_id,
+        if(r.row_month > toDate('1970-01-01'), r.row_month, b.batch_month), r.CONNECTIONID) AS pv_connection,
     r.METERWATERNODE AS water_node, r.METERWATERSOURCE AS water_source,
     toDecimal64OrZero(toString(round(toFloat64OrZero(r.AMOUNT), 4)), 4) AS line_amount,      -- as in the file
     toDecimal64OrZero(toString(round(toFloat64OrZero(r.QUANTITY), 4)), 4) AS line_quantity,  -- as in the file
